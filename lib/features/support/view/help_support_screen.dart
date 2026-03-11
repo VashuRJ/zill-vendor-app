@@ -5,6 +5,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
 import '../../../core/services/api_service.dart';
 import 'about_screen.dart';
+import 'chat_screen.dart';
 import 'terms_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'tickets_screen.dart';
@@ -51,6 +52,17 @@ class HelpSupportScreen extends StatelessWidget {
             _ContactCard(),
             const SizedBox(height: 16),
 
+            // ── AI Chat Support ───────────────────────────────────
+            _ChatNavCard(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ChatScreen()),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+
             // ── My Support Tickets ───────────────────────────────
             _TicketsNavCard(
               onTap: () {
@@ -84,7 +96,7 @@ class HelpSupportScreen extends StatelessWidget {
               title: 'Quick Links',
             ),
             const SizedBox(height: 10),
-            _QuickLinksCard(context: context),
+            const _QuickLinksCard(),
             const SizedBox(height: 24),
 
             // ── App Info ────────────────────────────────────────
@@ -199,10 +211,8 @@ class _ContactCard extends StatelessWidget {
   }
 
   Future<void> _launchEmail(BuildContext context) async {
-    final uri = Uri(
-      scheme: 'mailto',
-      path: 'support@zill.co.in',
-      queryParameters: {'subject': 'Zill Vendor App — Help & Support'},
+    final uri = Uri.parse(
+      'mailto:support@zill.co.in?subject=${Uri.encodeComponent('Zill Vendor App — Help & Support')}',
     );
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri);
@@ -399,11 +409,10 @@ class _FaqSection extends StatelessWidget {
 //  Quick Links Card
 // ─────────────────────────────────────────────────────────────────────
 class _QuickLinksCard extends StatelessWidget {
-  final BuildContext context;
-  const _QuickLinksCard({required this.context});
+  const _QuickLinksCard();
 
   @override
-  Widget build(BuildContext buildContext) {
+  Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -522,6 +531,83 @@ class _LinkTile extends StatelessWidget {
             const Icon(
               Icons.arrow_forward_ios_rounded,
               size: 14,
+              color: AppColors.textHint,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  AI Chat Support Card
+// ─────────────────────────────────────────────────────────────────────
+class _ChatNavCard extends StatelessWidget {
+  final VoidCallback onTap;
+  const _ChatNavCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+          boxShadow: const [
+            BoxShadow(
+              color: AppColors.shadowLight,
+              blurRadius: 10,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withAlpha(18),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.smart_toy_rounded,
+                size: 22,
+                color: AppColors.primary,
+              ),
+            ),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Chat with AI Assistant',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Get instant help with orders, payments & more',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textHint,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 15,
               color: AppColors.textHint,
             ),
           ],

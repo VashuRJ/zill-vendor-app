@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../viewmodel/menu_viewmodel.dart';
+import '../../addons/viewmodel/addon_viewmodel.dart';
 
 // ────────────────────────────────────────────────────────────────────
 //  Add / Edit Menu Item Screen
@@ -49,6 +51,14 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
 
   // ── State ────────────────────────────────────────────────────────
   bool _submitting = false;
+
+  // Variants
+  List<_VariantEntry> _variants = [];
+
+  // Addon Groups
+  List<AddonGroup> _allAddonGroups = [];
+  Set<int> _linkedAddonGroupIds = {};
+  bool _loadingAddons = false;
 
   bool get _isEditing => widget.item != null;
 
@@ -92,6 +102,58 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
       _isBestseller = it.isBestseller;
       _isNew = it.isNew;
       _existingImageUrl = it.imageUrl;
+
+      // Pre-fill variants from the item
+      _variants = it.variants
+          .map((v) => _VariantEntry(
+                id: v.id,
+                nameCtrl: TextEditingController(text: v.name),
+                priceCtrl: TextEditingController(
+                  text: v.price.toStringAsFixed(0),
+                ),
+                isDefault: v.isDefault,
+                isAvailable: v.isAvailable,
+              ))
+          .toList();
+
+      // Load linked addon groups
+      _loadAddonData(it.id);
+    } else {
+      _loadAllAddonGroups();
+    }
+  }
+
+  Future<void> _loadAddonData(int itemId) async {
+    setState(() => _loadingAddons = true);
+    try {
+      final addonVm = context.read<AddonViewModel>();
+      await addonVm.fetchGroups();
+      final linkedIds = await addonVm.getLinkedGroupIds(itemId);
+      if (mounted) {
+        setState(() {
+          _allAddonGroups = addonVm.groups;
+          _linkedAddonGroupIds = linkedIds.toSet();
+          _loadingAddons = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingAddons = false);
+    }
+  }
+
+  Future<void> _loadAllAddonGroups() async {
+    setState(() => _loadingAddons = true);
+    try {
+      final addonVm = context.read<AddonViewModel>();
+      await addonVm.fetchGroups();
+      if (mounted) {
+        setState(() {
+          _allAddonGroups = addonVm.groups;
+          _loadingAddons = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingAddons = false);
     }
   }
 
@@ -104,6 +166,10 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
     _prepTimeCtrl.dispose();
     _servesCtrl.dispose();
     _caloriesCtrl.dispose();
+    for (final v in _variants) {
+      v.nameCtrl.dispose();
+      v.priceCtrl.dispose();
+    }
     super.dispose();
   }
 
@@ -238,6 +304,9 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
     setState(() => _submitting = true);
 
     final vm = context.read<MenuViewModel>();
+    final addonVm = context.read<AddonViewModel>();
+    final nav = Navigator.of(context);
+    final scaffold = ScaffoldMessenger.of(context);
     final formData = await _buildFormData();
 
     final ok = _isEditing
@@ -245,11 +314,27 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
         : await vm.addItem(formData);
 
     if (!mounted) return;
-    setState(() => _submitting = false);
 
     if (ok) {
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
+      // Determine the item ID for variant/addon operations
+      final itemId = _isEditing ? widget.item!.id : _findNewItemId(vm);
+
+      if (itemId != null) {
+        // Save variants
+        await _saveVariants(vm, itemId);
+
+        // Save addon group links
+        await _saveAddonLinks(addonVm, itemId);
+      }
+
+      // Re-fetch to get fresh data with variants
+      await vm.fetchMenu();
+
+      if (!mounted) return;
+      setState(() => _submitting = false);
+
+      nav.pop();
+      scaffold.showSnackBar(
         SnackBar(
           content: Text(
             _isEditing ? 'Item updated!' : 'Item added successfully!',
@@ -259,15 +344,98 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
         ),
       );
     } else {
+      setState(() => _submitting = false);
+
       final errMsg = vm.error ?? 'Operation failed. Please try again.';
       vm.clearError();
-      ScaffoldMessenger.of(context).showSnackBar(
+      scaffold.showSnackBar(
         SnackBar(
           content: Text(errMsg),
           backgroundColor: AppColors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
+    }
+  }
+
+  /// Find the newly created item's ID by matching name in the refreshed menu.
+  int? _findNewItemId(MenuViewModel vm) {
+    final name = _nameCtrl.text.trim().toLowerCase();
+    for (final cat in vm.categories) {
+      for (final item in cat.items) {
+        if (item.name.toLowerCase() == name) {
+          return item.id;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Sync variants: delete removed, update existing, create new.
+  Future<void> _saveVariants(MenuViewModel vm, int itemId) async {
+    if (_variants.isEmpty && (!_isEditing || widget.item!.variants.isEmpty)) {
+      return; // Nothing to do
+    }
+
+    // In edit mode, delete variants that were removed
+    if (_isEditing) {
+      final currentIds = _variants
+          .where((v) => v.id != null)
+          .map((v) => v.id!)
+          .toSet();
+      for (final existingVariant in widget.item!.variants) {
+        if (existingVariant.id != null &&
+            !currentIds.contains(existingVariant.id)) {
+          await vm.deleteVariant(itemId, existingVariant.id!);
+        }
+      }
+    }
+
+    // Create/update variants
+    for (int i = 0; i < _variants.length; i++) {
+      final entry = _variants[i];
+      final variant = MenuItemVariant(
+        id: entry.id,
+        name: entry.nameCtrl.text.trim(),
+        price: double.tryParse(entry.priceCtrl.text.trim()) ?? 0,
+        isDefault: entry.isDefault,
+        isAvailable: entry.isAvailable,
+        displayOrder: i,
+      );
+
+      if (entry.id != null) {
+        await vm.updateVariant(itemId, entry.id!, variant);
+      } else {
+        await vm.createVariant(itemId, variant);
+      }
+    }
+  }
+
+  /// Sync addon group links: link newly selected, unlink removed.
+  Future<void> _saveAddonLinks(AddonViewModel addonVm, int itemId) async {
+    if (_isEditing) {
+      // Get current links from server
+      final serverLinks = await addonVm.getLinkedGroupIds(itemId);
+      final serverSet = serverLinks.toSet();
+
+      // Unlink removed groups
+      for (final gid in serverSet) {
+        if (!_linkedAddonGroupIds.contains(gid)) {
+          await addonVm.unlinkFromMenuItem(itemId, gid);
+        }
+      }
+
+      // Link newly added groups
+      for (final gid in _linkedAddonGroupIds) {
+        if (!serverSet.contains(gid)) {
+          await addonVm.linkToMenuItem(itemId, gid);
+        }
+      }
+    } else {
+      // New item — link all selected groups
+      for (final gid in _linkedAddonGroupIds) {
+        await addonVm.linkToMenuItem(itemId, gid);
+      }
     }
   }
 
@@ -535,6 +703,14 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                 onChanged: (v) => setState(() => _isGlutenFree = v ?? false),
               ),
 
+              // ── Variants ──────────────────────────────────────────
+              const SizedBox(height: 24),
+              _buildVariantsSection(),
+
+              // ── Addon Groups ──────────────────────────────────────
+              const SizedBox(height: 24),
+              _buildAddonGroupsSection(),
+
               // ── Submit button ──────────────────────────────────────
               const SizedBox(height: 32),
               SizedBox(
@@ -692,6 +868,347 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
     return 'http://localhost:8000$url';
   }
 
+  // ── Variants Section ─────────────────────────────────────────────
+  Widget _buildVariantsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _sectionLabel('VARIANTS (SIZES / PORTIONS)'),
+            const Spacer(),
+            GestureDetector(
+              onTap: _addVariant,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withAlpha(15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add_rounded, size: 16, color: AppColors.primary),
+                    SizedBox(width: 4),
+                    Text(
+                      'Add',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_variants.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.borderLight),
+            ),
+            child: const Text(
+              'No variants. Add sizes like Small, Medium, Large with different prices.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.textHint),
+              textAlign: TextAlign.center,
+            ),
+          )
+        else
+          ...List.generate(_variants.length, (i) {
+            final v = _variants[i];
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.borderLight),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Default indicator
+                  GestureDetector(
+                    onTap: () => _setDefaultVariant(i),
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 10),
+                      width: 20, height: 20,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: v.isDefault
+                            ? AppColors.primary
+                            : Colors.transparent,
+                        border: Border.all(
+                          color: v.isDefault
+                              ? AppColors.primary
+                              : AppColors.textHint,
+                          width: 2,
+                        ),
+                      ),
+                      child: v.isDefault
+                          ? const Icon(
+                              Icons.check, size: 12, color: Colors.white,
+                            )
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  // Name
+                  Expanded(
+                    flex: 3,
+                    child: TextFormField(
+                      controller: v.nameCtrl,
+                      textCapitalization: TextCapitalization.words,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                      decoration: _variantInput('Name (e.g. Small)'),
+                      validator: (val) => (val == null || val.trim().isEmpty)
+                          ? 'Required'
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Price
+                  Expanded(
+                    flex: 2,
+                    child: TextFormField(
+                      controller: v.priceCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
+                      ],
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                      decoration: _variantInput('₹ Price'),
+                      validator: (val) {
+                        if (val == null || val.trim().isEmpty) return 'Required';
+                        if (double.tryParse(val.trim()) == null) return 'Invalid';
+                        return null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Remove
+                  GestureDetector(
+                    onTap: () => _removeVariant(i),
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: AppColors.error.withAlpha(12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: AppColors.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        if (_variants.isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Tap the circle to set default variant. Prices override the base price.',
+              style: TextStyle(fontSize: 11, color: AppColors.textHint),
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _addVariant() {
+    setState(() {
+      _variants.add(_VariantEntry(
+        nameCtrl: TextEditingController(),
+        priceCtrl: TextEditingController(),
+        isDefault: _variants.isEmpty, // first variant is default
+      ));
+    });
+  }
+
+  void _removeVariant(int index) {
+    setState(() {
+      _variants[index].nameCtrl.dispose();
+      _variants[index].priceCtrl.dispose();
+      _variants.removeAt(index);
+      // Ensure at least one default if variants remain
+      if (_variants.isNotEmpty && !_variants.any((v) => v.isDefault)) {
+        _variants.first.isDefault = true;
+      }
+    });
+  }
+
+  void _setDefaultVariant(int index) {
+    setState(() {
+      for (int i = 0; i < _variants.length; i++) {
+        _variants[i].isDefault = i == index;
+      }
+    });
+  }
+
+  static InputDecoration _variantInput(String hint) => InputDecoration(
+    hintText: hint,
+    hintStyle: TextStyle(
+      color: AppColors.textHint.withAlpha(150),
+      fontWeight: FontWeight.w400,
+      fontSize: 12,
+    ),
+    isDense: true,
+    filled: true,
+    fillColor: AppColors.background,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide.none,
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+    ),
+    errorBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: AppColors.error),
+    ),
+    focusedErrorBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: AppColors.error, width: 1.5),
+    ),
+    errorStyle: const TextStyle(fontSize: 10),
+  );
+
+  // ── Addon Groups Section ────────────────────────────────────────
+  Widget _buildAddonGroupsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionLabel('LINKED ADDON GROUPS'),
+        const SizedBox(height: 8),
+        if (_loadingAddons)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: SizedBox(
+                width: 20, height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.primary,
+                ),
+              ),
+            ),
+          )
+        else if (_allAddonGroups.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.borderLight),
+            ),
+            child: const Text(
+              'No addon groups created yet. Create addon groups from the menu to link them here.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.textHint),
+              textAlign: TextAlign.center,
+            ),
+          )
+        else
+          ..._allAddonGroups.map((group) {
+            final isLinked = _linkedAddonGroupIds.contains(group.id);
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isLinked
+                      ? AppColors.primary.withAlpha(60)
+                      : AppColors.borderLight,
+                ),
+              ),
+              child: CheckboxListTile(
+                value: isLinked,
+                onChanged: (val) {
+                  setState(() {
+                    if (val == true) {
+                      _linkedAddonGroupIds.add(group.id);
+                    } else {
+                      _linkedAddonGroupIds.remove(group.id);
+                    }
+                  });
+                },
+                activeColor: AppColors.primary,
+                controlAffinity: ListTileControlAffinity.trailing,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 2,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                title: Text(
+                  group.name,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                subtitle: Text(
+                  '${group.items.length} items · ${group.selectionType == 'single' ? 'Single' : 'Multi'} select${group.isRequired ? ' · Required' : ''}',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                secondary: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.purple.withAlpha(15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.playlist_add_rounded,
+                    size: 18,
+                    color: AppColors.purple,
+                  ),
+                ),
+              ),
+            );
+          }),
+        if (!_isEditing && _allAddonGroups.isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Addon groups will be linked after the item is saved.',
+              style: TextStyle(fontSize: 11, color: AppColors.textHint),
+            ),
+          ),
+      ],
+    );
+  }
+
   // ── Shared helpers ───────────────────────────────────────────────
   static Widget _sectionLabel(String text) => Text(
     text,
@@ -781,4 +1298,20 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
     contentPadding: EdgeInsets.zero,
     dense: true,
   );
+}
+
+class _VariantEntry {
+  final int? id;
+  final TextEditingController nameCtrl;
+  final TextEditingController priceCtrl;
+  bool isDefault;
+  bool isAvailable;
+
+  _VariantEntry({
+    this.id,
+    required this.nameCtrl,
+    required this.priceCtrl,
+    this.isDefault = false,
+    this.isAvailable = true,
+  });
 }

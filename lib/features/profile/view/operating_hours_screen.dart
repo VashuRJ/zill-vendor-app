@@ -34,22 +34,22 @@ class _OperatingHoursView extends StatefulWidget {
 }
 
 class _OperatingHoursViewState extends State<_OperatingHoursView> {
+  late final OperatingHoursViewModel _hoursVM;
+
   @override
   void initState() {
     super.initState();
+    _hoursVM = context.read<OperatingHoursViewModel>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final vm = context.read<OperatingHoursViewModel>();
-      vm.addListener(_onVmChange);
-      vm.fetchOperatingHours();
+      _hoursVM.addListener(_onVmChange);
+      _hoursVM.fetchOperatingHours();
     });
   }
 
   @override
   void dispose() {
-    try {
-      context.read<OperatingHoursViewModel>().removeListener(_onVmChange);
-    } catch (_) {}
+    _hoursVM.removeListener(_onVmChange);
     super.dispose();
   }
 

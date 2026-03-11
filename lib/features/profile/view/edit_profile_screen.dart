@@ -65,9 +65,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       description: _descriptionCtrl.text.trim(),
     );
 
+    if (!mounted) return;
     setState(() => _saving = false);
 
-    if (mounted) {
+    {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(

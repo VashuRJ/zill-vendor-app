@@ -3,6 +3,45 @@ import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/services/api_service.dart';
 
+// ── MenuItemVariant ──────────────────────────────────────────────────
+class MenuItemVariant {
+  final int? id;
+  final String name;
+  final double price;
+  final bool isDefault;
+  final bool isAvailable;
+  final int displayOrder;
+
+  const MenuItemVariant({
+    this.id,
+    required this.name,
+    required this.price,
+    this.isDefault = false,
+    this.isAvailable = true,
+    this.displayOrder = 0,
+  });
+
+  factory MenuItemVariant.fromJson(Map<String, dynamic> json) {
+    return MenuItemVariant(
+      id: (json['id'] as num?)?.toInt(),
+      name: json['name'] as String? ?? '',
+      price: double.tryParse((json['price'] ?? '0').toString()) ?? 0.0,
+      isDefault: json['is_default'] as bool? ?? false,
+      isAvailable: json['is_available'] as bool? ?? true,
+      displayOrder: (json['display_order'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    if (id != null) 'id': id,
+    'name': name,
+    'price': price,
+    'is_default': isDefault,
+    'is_available': isAvailable,
+    'display_order': displayOrder,
+  };
+}
+
 // ── MenuItem ─────────────────────────────────────────────────────────
 class MenuItem {
   final int id;
@@ -24,6 +63,8 @@ class MenuItem {
   final bool isNew;
   final int? categoryId;
   final String categoryName;
+  final bool isCustomizable;
+  final List<MenuItemVariant> variants;
   // Mutable — toggled by vendor
   bool isAvailable;
 
@@ -48,6 +89,8 @@ class MenuItem {
     this.categoryId,
     required this.categoryName,
     required this.isAvailable,
+    this.isCustomizable = false,
+    this.variants = const [],
   });
 
   factory MenuItem.fromJson(Map<String, dynamic> json) {
@@ -78,6 +121,12 @@ class MenuItem {
       categoryId: (json['category'] as num?)?.toInt(),
       categoryName: json['category_name'] as String? ?? 'Other',
       isAvailable: json['is_available'] as bool? ?? true,
+      isCustomizable: json['is_customizable'] as bool? ?? false,
+      variants: (json['variants'] as List<dynamic>?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(MenuItemVariant.fromJson)
+              .toList() ??
+          const [],
     );
   }
 
@@ -574,6 +623,98 @@ class MenuViewModel extends ChangeNotifier {
     } finally {
       _saving = false;
       notifyListeners();
+    }
+  }
+
+  // ── Variant CRUD ──────────────────────────────────────────────────
+
+  /// Fetch variants for a specific menu item.
+  Future<List<MenuItemVariant>> fetchVariants(int itemId) async {
+    try {
+      final response = await _api.get(ApiEndpoints.menuItemVariants(itemId));
+      final data = response.data;
+      List<dynamic> rawList;
+      if (data is Map<String, dynamic>) {
+        rawList = data['variants'] as List<dynamic>? ??
+            data['results'] as List<dynamic>? ??
+            <dynamic>[];
+      } else if (data is List) {
+        rawList = data;
+      } else {
+        rawList = [];
+      }
+      return rawList
+          .whereType<Map<String, dynamic>>()
+          .map(MenuItemVariant.fromJson)
+          .toList();
+    } catch (e) {
+      debugPrint('❌ [Menu] fetchVariants($itemId) failed: $e');
+      return [];
+    }
+  }
+
+  /// Create a new variant for a menu item.
+  Future<bool> createVariant(int itemId, MenuItemVariant variant) async {
+    _saving = true;
+    notifyListeners();
+    try {
+      await _api.post(
+        ApiEndpoints.menuItemVariants(itemId),
+        data: variant.toJson(),
+      );
+      debugPrint('✅ [Menu] variant created for item $itemId');
+      return true;
+    } on DioException catch (e) {
+      _error = _parseError(e);
+      return false;
+    } catch (e) {
+      _error = 'Could not create variant.';
+      return false;
+    } finally {
+      _saving = false;
+      notifyListeners();
+    }
+  }
+
+  /// Update an existing variant.
+  Future<bool> updateVariant(
+    int itemId,
+    int variantId,
+    MenuItemVariant variant,
+  ) async {
+    _saving = true;
+    notifyListeners();
+    try {
+      await _api.put(
+        ApiEndpoints.menuItemVariantDetail(itemId, variantId),
+        data: variant.toJson(),
+      );
+      debugPrint('✅ [Menu] variant $variantId updated');
+      return true;
+    } on DioException catch (e) {
+      _error = _parseError(e);
+      return false;
+    } catch (e) {
+      _error = 'Could not update variant.';
+      return false;
+    } finally {
+      _saving = false;
+      notifyListeners();
+    }
+  }
+
+  /// Delete a variant.
+  Future<bool> deleteVariant(int itemId, int variantId) async {
+    try {
+      await _api.delete(
+        ApiEndpoints.menuItemVariantDetail(itemId, variantId),
+      );
+      debugPrint('✅ [Menu] variant $variantId deleted');
+      return true;
+    } on DioException catch (e) {
+      _error = _parseError(e);
+      notifyListeners();
+      return false;
     }
   }
 

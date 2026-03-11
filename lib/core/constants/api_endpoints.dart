@@ -44,6 +44,28 @@ class ApiEndpoints {
   static String menuItemDetail(int id) =>
       '/vendors/menu-items/$id/'; // GET / PUT / DELETE
 
+  // Menu Item Variants
+  static String menuItemVariants(int itemId) =>
+      '/vendors/menu-items/$itemId/variants/';
+  static String menuItemVariantDetail(int itemId, int variantId) =>
+      '/vendors/menu-items/$itemId/variants/$variantId/';
+
+  // Addon Groups (restaurant-wide)
+  static const String addonGroups = '/vendors/addon-groups/';
+  static String addonGroupDetail(int groupId) =>
+      '/vendors/addon-groups/$groupId/';
+
+  // Link / unlink addon group to menu item
+  static String menuItemAddonLink(int itemId, int groupId) =>
+      '/vendors/menu-items/$itemId/addons/$groupId/';
+  // Get addon groups linked to a menu item
+  static String menuItemAddons(int itemId) =>
+      '/vendors/menu-items/$itemId/addons/';
+
+  // Delivery Zones
+  static String deliveryZoneDetail(int zoneId) =>
+      '/vendors/delivery-zones/$zoneId/';
+
   // Orders  — GET /api/orders/vendor-orders/?status=pending
   static const String vendorOrders = '/orders/vendor-orders/';
   static String orderAccept(int id) => '/orders/$id/accept/';
@@ -91,6 +113,7 @@ class ApiEndpoints {
 
   // Documents / KYC
   static const String documents = '/vendors/documents/';
+  static String documentDetail(int id) => '/vendors/documents/$id/';
 
   // Promotions / Coupons
   static const String coupons = '/vendors/coupons/';
@@ -106,4 +129,28 @@ class ApiEndpoints {
   static String supportTicketDetail(int id) => '/orders/support/tickets/$id/';
   static String supportTicketReply(int id) =>
       '/orders/support/tickets/$id/reply/';
+  static String supportTicketRate(int id) =>
+      '/orders/support/tickets/$id/rate/';
+
+  // Chat / AI Support
+  static const String chatSessionStart = '/support/chat/session/start/';
+  static const String chatSessions = '/support/chat/sessions/';
+  static const String chatFaqs = '/support/chat/faqs/';
+  static String chatSessionDetail(String sessionId) =>
+      '/support/chat/session/$sessionId/';
+  static String chatSessionMessage(String sessionId) =>
+      '/support/chat/session/$sessionId/message/';
+  static String chatSessionRate(String sessionId) =>
+      '/support/chat/session/$sessionId/rate/';
+  static String chatSessionEnd(String sessionId) =>
+      '/support/chat/session/$sessionId/end/';
+
+  // Subscriptions
+  static const String subscriptionPlans = '/vendors/subscription/plans/';
+  static const String subscribe = '/vendors/subscription/subscribe/';
+  static const String verifySubscriptionPayment =
+      '/vendors/subscription/verify-payment/';
+  static const String mySubscription = '/vendors/subscription/my/';
+  static const String cancelSubscription = '/vendors/subscription/cancel/';
+  static const String payAdvance = '/vendors/subscription/pay-advance/';
 }

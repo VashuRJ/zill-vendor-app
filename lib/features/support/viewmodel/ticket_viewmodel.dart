@@ -42,13 +42,18 @@ class SupportTicket {
 
   bool get isOpen =>
       status == 'open' ||
+      status == 'assigned' ||
       status == 'in_progress' ||
       status == 'waiting_customer' ||
-      status == 'waiting_vendor';
+      status == 'waiting_vendor' ||
+      status == 'waiting_internal' ||
+      status == 'escalated' ||
+      status == 'on_hold' ||
+      status == 'reopened';
 
   factory SupportTicket.fromJson(Map<String, dynamic> json) {
     return SupportTicket(
-      id: json['id'] as int,
+      id: _safeInt(json['id']),
       ticketNumber: (json['ticket_number'] as String?) ?? '',
       subject: (json['subject'] as String?) ?? '',
       category: (json['category'] as String?) ?? 'other',
@@ -57,7 +62,7 @@ class SupportTicket {
       priorityDisplay: (json['priority_display'] as String?) ?? 'Medium',
       status: (json['status'] as String?) ?? 'open',
       statusDisplay: (json['status_display'] as String?) ?? 'Open',
-      relatedOrderId: json['related_order_id'] as int?,
+      relatedOrderId: _safeIntOrNull(json['related_order_id']),
       createdAt: _parseDate(json['created_at']),
       updatedAt: _parseDate(json['updated_at']),
       resolvedAt: json['resolved_at'] != null
@@ -72,6 +77,18 @@ class SupportTicket {
       return DateTime.tryParse(v) ?? DateTime.now();
     }
     return DateTime.now();
+  }
+
+  static int _safeInt(dynamic v, [int fallback = 0]) {
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  static int? _safeIntOrNull(dynamic v) {
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v);
+    return null;
   }
 }
 
@@ -130,7 +147,8 @@ class TicketViewModel extends ChangeNotifier {
         rawList = [];
       }
       _tickets = rawList
-          .map((e) => SupportTicket.fromJson(e as Map<String, dynamic>))
+          .whereType<Map<String, dynamic>>()
+          .map(SupportTicket.fromJson)
           .toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       _status = TicketsStatus.idle;
@@ -165,6 +183,8 @@ class TicketViewModel extends ChangeNotifier {
     try {
       await _apiService.post(ApiEndpoints.supportTicketCreate, data: data);
       await fetchTickets();
+      _isBusy = false;
+      notifyListeners();
       return true;
     } on DioException catch (e) {
       _errorMessage = _parseDioError(e);
@@ -183,22 +203,36 @@ class TicketViewModel extends ChangeNotifier {
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   String _parseDioError(DioException e) {
+    final statusCode = e.response?.statusCode;
     final data = e.response?.data;
-    if (data is Map<String, dynamic>) {
-      for (final key in data.keys) {
-        final val = data[key];
-        if (val is List && val.isNotEmpty) return val.first.toString();
-        if (val is String) return val;
+
+    // Try extracting message from response body (any Map shape)
+    if (data is Map) {
+      final map = Map<String, dynamic>.from(data);
+      // Nested: {"error": {"message": "..."}}
+      final error = map['error'];
+      if (error is Map) {
+        final msg = error['message'];
+        if (msg is String && msg.isNotEmpty) return msg;
       }
-      if (data.containsKey('error')) return data['error'].toString();
-      if (data.containsKey('detail')) return data['detail'].toString();
+      if (error is String && error.isNotEmpty) return error;
+      if (map['message'] is String) return map['message'] as String;
+      if (map['detail'] is String) return map['detail'] as String;
+      // Field-level errors: {"field_name": ["error message"]}
+      for (final val in map.values) {
+        if (val is List && val.isNotEmpty) return val.first.toString();
+      }
     }
-    if (e.response?.statusCode == 401) {
+
+    if (statusCode == 429) {
+      return 'Too many requests. Please wait a few minutes.';
+    }
+    if (statusCode == 401) {
       return 'Session expired. Please login again.';
     }
-    if (e.response?.statusCode == 403) return 'Access denied.';
-    if (e.response?.statusCode == 404) return 'Not found.';
-    if ((e.response?.statusCode ?? 0) >= 500) {
+    if (statusCode == 403) return 'Access denied.';
+    if (statusCode == 404) return 'Not found.';
+    if ((statusCode ?? 0) >= 500) {
       return 'Server error. Try again later.';
     }
     return e.message ?? 'Network error. Please check your connection.';

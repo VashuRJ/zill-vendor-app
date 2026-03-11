@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -138,35 +141,142 @@ class ApiService {
   }
 }
 
-/// Interceptor to attach JWT token and handle 401 refresh.
-/// Uses plain Interceptor (not QueuedInterceptor) so all requests are dispatched
-/// in parallel. The async getAccessToken() is handled via .then() so
-/// handler.next() is guaranteed to be called only after the token resolves,
-/// without turning onRequest into an async void (which Dio ignores).
+/// JWT auth interceptor — production-grade for mobile vendor apps.
+///
+/// Key features:
+/// 1. Proactive refresh: decodes JWT exp and refreshes ~2 min before expiry
+///    so vendors never see a 401 during active use.
+/// 2. Concurrent request queuing: if multiple requests trigger a refresh
+///    simultaneously, only ONE refresh call is made; all others await the
+///    same Completer, preventing token rotation races.
+/// 3. Login-generation tracking: stale 401 handlers from a previous session
+///    never overwrite the new session's tokens.
 class _AuthInterceptor extends Interceptor {
   final StorageService _storageService;
   final Dio _dio;
+  late final Dio _refreshDio;
   final GlobalKey<NavigatorState>? _navigatorKey;
 
-  /// Static lock — prevents multiple simultaneous 401s from each triggering
-  /// their own logout + navigation, which causes ghosting / flickering.
   static bool _isLoggingOut = false;
-
-  /// Incremented on every successful login. Any 401 handler that was started
-  /// before the most recent login is "stale" — it must not navigate or
-  /// consume/rotate the new session's refresh token.
   static int _loginGeneration = 0;
+
+  /// If non-null, a refresh is already in-flight — new 401s await this
+  /// instead of firing a duplicate refresh POST.
+  Completer<String?>? _refreshCompleter;
 
   _AuthInterceptor(
     this._storageService,
     this._dio, {
     GlobalKey<NavigatorState>? navigatorKey,
-  }) : _navigatorKey = navigatorKey;
+  }) : _navigatorKey = navigatorKey {
+    _refreshDio = Dio(
+      BaseOptions(
+        baseUrl: ApiEndpoints.baseUrl,
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      ),
+    );
+  }
+
+  // ── Proactive refresh: decode JWT exp, refresh 2 min before expiry ──
+
+  /// Extracts the `exp` claim from a JWT without a crypto library.
+  /// Returns null if the token is malformed.
+  static DateTime? _tokenExpiry(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return null;
+      // Base64url → Base64 (Dart's base64 decoder needs padding)
+      String payload = parts[1];
+      switch (payload.length % 4) {
+        case 2: payload += '=='; break;
+        case 3: payload += '=';  break;
+      }
+      final decoded = String.fromCharCodes(
+        base64Url.decode(payload),
+      );
+      // Minimal JSON parse — only need "exp"
+      final expMatch = RegExp(r'"exp"\s*:\s*(\d+)').firstMatch(decoded);
+      if (expMatch == null) return null;
+      return DateTime.fromMillisecondsSinceEpoch(
+        int.parse(expMatch.group(1)!) * 1000,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Returns true if the access token will expire within [buffer].
+  /// Returns false if there is no token (caller handles that separately).
+  Future<bool> _isTokenExpiringSoon({
+    Duration buffer = const Duration(minutes: 2),
+  }) async {
+    final token = await _storageService.getAccessToken();
+    if (token == null || token.isEmpty) return false;
+    final exp = _tokenExpiry(token);
+    if (exp == null) return false; // can't decode → let server decide
+    return DateTime.now().toUtc().isAfter(exp.subtract(buffer));
+  }
+
+  /// Single-flight refresh: returns the new access token, or null on failure.
+  Future<String?> _refreshTokens() async {
+    // If a refresh is already in-flight, piggyback on it.
+    if (_refreshCompleter != null) return _refreshCompleter!.future;
+
+    _refreshCompleter = Completer<String?>();
+    final generation = _loginGeneration;
+
+    try {
+      final refreshToken = await _storageService.getRefreshToken();
+
+      if (_loginGeneration != generation || refreshToken == null) {
+        _refreshCompleter!.complete(null);
+        return null;
+      }
+
+      final response = await _refreshDio.post(
+        ApiEndpoints.tokenRefresh,
+        data: {'refresh': refreshToken},
+      );
+
+      if (_loginGeneration != generation) {
+        _refreshCompleter!.complete(null);
+        return null;
+      }
+
+      if (response.statusCode == 200 && response.data['access'] != null) {
+        final newAccess = response.data['access'].toString();
+        final newRefresh =
+            response.data['refresh']?.toString() ?? refreshToken;
+
+        await _storageService.saveTokens(
+          accessToken: newAccess,
+          refreshToken: newRefresh,
+        );
+        AppLogger.i('[Auth] Token refreshed proactively');
+        _refreshCompleter!.complete(newAccess);
+        return newAccess;
+      }
+
+      _refreshCompleter!.complete(null);
+      return null;
+    } catch (e) {
+      AppLogger.e('[Auth] Token refresh failed', e);
+      _refreshCompleter!.complete(null);
+      return null;
+    } finally {
+      _refreshCompleter = null;
+    }
+  }
+
+  // ── onRequest: attach token, proactively refresh if near-expiry ───────
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    // If we're already in the process of logging out, reject immediately
-    // so no new API calls pile up and trigger more 401s.
     if (_isLoggingOut) {
       handler.reject(
         DioException(
@@ -178,7 +288,6 @@ class _AuthInterceptor extends Interceptor {
       return;
     }
 
-    // Skip auth header for public endpoints
     final noAuthPaths = [
       ApiEndpoints.login,
       ApiEndpoints.register,
@@ -191,126 +300,104 @@ class _AuthInterceptor extends Interceptor {
     ];
 
     final needsAuth = !noAuthPaths.any((p) => options.path.contains(p));
-
     if (!needsAuth) {
       handler.next(options);
       return;
     }
 
-    // Use .then() — never async void, so Dio always awaits the resolution
-    _storageService
-        .getAccessToken()
-        .then((token) {
-          if (token != null && token.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $token';
-            handler.next(options);
-          } else {
-            // No token in storage → user is logged out. Reject immediately
-            // so the request never reaches the server and triggers a 401 →
-            // refresh → _clearAndLogout() cycle that would rebuild the login
-            // screen while the user is typing.
-            AppLogger.w(
-              '[Auth] No token for ${options.method} ${options.path} — aborting',
-            );
-            handler.reject(
-              DioException(
-                requestOptions: options,
-                type: DioExceptionType.cancel,
-                error: 'No auth token',
-              ),
-            );
-          }
-        })
-        .catchError((e) {
-          AppLogger.e('[Auth] getAccessToken error', e);
-          handler.next(options); // proceed without token rather than hanging
-        });
+    () async {
+      try {
+        // Proactive refresh: if token expires within 2 min, refresh NOW
+        // before the request goes out — vendor never sees a 401.
+        if (await _isTokenExpiringSoon()) {
+          AppLogger.i('[Auth] Token expiring soon — proactive refresh');
+          await _refreshTokens();
+        }
+
+        final token = await _storageService.getAccessToken();
+        if (token != null && token.isNotEmpty) {
+          options.headers['Authorization'] = 'Bearer $token';
+          handler.next(options);
+        } else {
+          AppLogger.w(
+            '[Auth] No token for ${options.method} ${options.path} — aborting',
+          );
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.cancel,
+              error: 'No auth token',
+            ),
+          );
+        }
+      } catch (e) {
+        AppLogger.e('[Auth] getAccessToken error', e);
+        handler.next(options);
+      }
+    }();
   }
+
+  // ── onError: handle 401 with single-flight refresh + retry ────────────
+
+  static const _retryKey = '_authRetried';
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) {
     if (err.response?.statusCode == 401) {
-      // If another 401 already triggered logout, don't duplicate the work.
       if (_isLoggingOut) {
         return handler.next(err);
       }
 
-      AppLogger.w('[Auth] 401 received — attempting token refresh');
+      // Already retried once with a fresh token → don't loop, just logout.
+      if (err.requestOptions.extra[_retryKey] == true) {
+        AppLogger.e('[Auth] Retry still got 401 — clearing session');
+        () async {
+          await _clearAndLogout();
+          handler.next(err);
+        }();
+        return;
+      }
 
-      // Snapshot the login generation BEFORE any async work. If the user
-      // logs in again while this handler is awaiting, the generation will
-      // have changed and we must discard this stale 401 without navigating
-      // or consuming the new session's refresh token.
+      AppLogger.w('[Auth] 401 received — attempting token refresh');
       final generation = _loginGeneration;
 
-      // Async IIFE — avoids Dart 3.x .catchError() return-type runtime checks.
       () async {
         try {
-          final refreshToken = await _storageService.getRefreshToken();
-
-          // Stale check — new login happened while we were awaiting storage.
           if (_loginGeneration != generation) {
             handler.next(err);
             return;
           }
 
-          if (refreshToken == null) {
-            AppLogger.e('[Auth] No refresh token — clearing session');
-            await _clearAndLogout();
+          final newAccess = await _refreshTokens();
+
+          if (_loginGeneration != generation) {
             handler.next(err);
             return;
           }
 
-          try {
-            final response = await Dio().post(
-              '${ApiEndpoints.baseUrl}${ApiEndpoints.tokenRefresh}',
-              data: {'refresh': refreshToken},
-            );
-
-            // Stale check — new login happened while the refresh POST was
-            // in-flight. Don't overwrite the new session's tokens.
-            if (_loginGeneration != generation) {
-              handler.next(err);
+          if (newAccess != null) {
+            // Mark as retried so a second 401 won't loop.
+            err.requestOptions.extra[_retryKey] = true;
+            err.requestOptions.headers['Authorization'] =
+                'Bearer $newAccess';
+            try {
+              final retryResponse = await _dio.fetch(err.requestOptions);
+              handler.resolve(retryResponse);
               return;
-            }
-
-            if (response.statusCode == 200) {
-              final newAccess = response.data['access'] as String;
-              final newRefresh =
-                  response.data['refresh'] as String? ?? refreshToken;
-
-              await _storageService.saveTokens(
-                accessToken: newAccess,
-                refreshToken: newRefresh,
-              );
-
-              AppLogger.i('[Auth] Token refreshed — retrying request');
-              err.requestOptions.headers['Authorization'] =
-                  'Bearer $newAccess';
-              try {
-                final retryResponse = await _dio.fetch(err.requestOptions);
-                handler.resolve(retryResponse);
+            } on DioException catch (retryErr) {
+              if (retryErr.type == DioExceptionType.cancel) {
+                handler.next(err);
                 return;
-              } on DioException catch (retryErr) {
-                // Retry was cancelled because _isLoggingOut is true — logout
-                // is already in progress. Pass the original 401 up silently
-                // so _silentRefresh can stop the timer. Do NOT navigate.
-                if (retryErr.type == DioExceptionType.cancel) {
-                  handler.next(err);
-                  return;
-                }
-                // Retry got another server error — fall through to handler.next
               }
-              handler.next(err);
-              return;
             }
-          } catch (e) {
-            // Refresh POST itself failed (network error or 400/401 from server).
-            // Only navigate if this 401 is still from the current session.
-            if (_loginGeneration == generation) {
-              AppLogger.e('[Auth] Token refresh failed — clearing session', e);
-              await _clearAndLogout();
-            }
+            handler.next(err);
+            return;
+          }
+
+          // Refresh returned null — session is dead.
+          if (_loginGeneration == generation) {
+            AppLogger.e('[Auth] Refresh failed — clearing session');
+            await _clearAndLogout();
           }
           handler.next(err);
         } catch (_) {
@@ -325,7 +412,7 @@ class _AuthInterceptor extends Interceptor {
 
   /// Clear storage and force-navigate to login — **once only**.
   Future<void> _clearAndLogout() async {
-    if (_isLoggingOut) return; // already in progress
+    if (_isLoggingOut) return;
     _isLoggingOut = true;
 
     await _storageService.clearAll();
@@ -336,8 +423,6 @@ class _AuthInterceptor extends Interceptor {
       nav.pushNamedAndRemoveUntil(AppRouter.login, (_) => false);
     }
 
-    // Reset the lock after a short delay so the next fresh login session
-    // can hit 401 → refresh normally again.
     Future.delayed(const Duration(seconds: 2), () {
       _isLoggingOut = false;
     });

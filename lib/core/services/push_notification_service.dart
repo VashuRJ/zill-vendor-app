@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -7,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../constants/api_endpoints.dart';
 import '../utils/app_logger.dart';
 import 'api_service.dart';
+import 'order_alarm_service.dart';
 import 'storage_service.dart';
 import 'notification_handler.dart';
 
@@ -49,6 +51,11 @@ class PushNotificationService {
   final ApiService _apiService;
   final StorageService _storageService;
   final FirebaseMessaging _messaging;
+
+  /// Track stream subscriptions to cancel on unregister/re-init.
+  StreamSubscription<String>? _tokenRefreshSub;
+  StreamSubscription<RemoteMessage>? _foregroundSub;
+  StreamSubscription<RemoteMessage>? _messageOpenedSub;
 
   /// Optional callback to refresh orders when a push arrives in foreground.
   VoidCallback? onRefreshOrders;
@@ -94,17 +101,22 @@ class PushNotificationService {
     await _getAndRegisterToken();
     AppLogger.i('[FCM] ✅ Step 4: Token registration attempted');
 
-    // 5. Listen for token refreshes (e.g. app restore, new device)
-    _messaging.onTokenRefresh.listen((newToken) {
+    // 5. Cancel previous subscriptions to avoid duplicates on re-login
+    await _tokenRefreshSub?.cancel();
+    await _foregroundSub?.cancel();
+    await _messageOpenedSub?.cancel();
+
+    // 6. Listen for token refreshes (e.g. app restore, new device)
+    _tokenRefreshSub = _messaging.onTokenRefresh.listen((newToken) {
       AppLogger.i('[FCM] Token refreshed — re-registering');
       _registerTokenWithBackend(newToken);
     });
 
-    // 6. Foreground message listener — shows heads-up notification
-    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+    // 7. Foreground message listener — shows heads-up notification
+    _foregroundSub = FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
 
-    // 7. When user taps a notification (app was in background)
-    FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
+    // 8. When user taps a notification (app was in background)
+    _messageOpenedSub = FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
 
     // 8. Check if app was launched from a terminated-state notification
     final initialMessage = await _messaging.getInitialMessage();
@@ -249,7 +261,31 @@ class PushNotificationService {
     AppLogger.i('[FCM]   body: ${message.notification?.body}');
     AppLogger.i('[FCM]   data: ${message.data}');
 
-    // Show a heads-up local notification so the user sees it on screen
+    final type = message.data['type'] ?? '';
+
+    // New order → trigger loud alarm via native service (foreground too,
+    // because the native FCM handler may have already started it, but
+    // we also want to navigate to the incoming order screen).
+    if (type == 'new_order' || type == 'vendor_new_order') {
+      AppLogger.i('[FCM] New order in foreground — triggering alarm + navigation');
+      final data = message.data;
+      final alarmData = AlarmOrderData(
+        orderId: int.tryParse(data['order_id'] ?? '0') ?? 0,
+        orderNumber: data['order_number'] ?? 'New Order',
+        orderAmount: data['total_amount'] ?? data['order_amount'] ?? '',
+        orderItems: data['items_summary'] ?? data['order_items'] ?? '',
+        customerName: data['customer_name'] ?? data['order_customer'] ?? '',
+      );
+      // Native ZillFirebaseMessagingService already started the alarm,
+      // so we only need to notify Flutter listeners for navigation.
+      // Notify Flutter listeners (IncomingOrderScreen will show)
+      OrderAlarmService.onAlarmOrderReceived?.call(alarmData);
+      // Still refresh orders list
+      onRefreshOrders?.call();
+      return; // Skip normal notification — alarm handles it
+    }
+
+    // Non-order messages: show a heads-up local notification
     _showLocalNotification(message);
 
     // Delegate to VendorNotificationHandler for order-related actions
@@ -316,7 +352,7 @@ class PushNotificationService {
     if (message.data.isEmpty) return;
 
     // Try to navigate to the specific order if orderId is present
-    final orderId = (message.data['order_id'] as num?)?.toInt();
+    final orderId = int.tryParse(message.data['order_id']?.toString() ?? '');
     if (orderId != null && onNavigateToOrder != null) {
       onNavigateToOrder!(orderId);
       return;
@@ -333,12 +369,41 @@ class PushNotificationService {
 
   // ── Cleanup (on logout) ───────────────────────────────────────────
   /// Call this when the vendor logs out to stop receiving pushes.
+  /// Unregisters the FCM token from backend first, then deletes locally.
   Future<void> unregister() async {
+    // Cancel stream subscriptions first — prevents re-registration from
+    // onTokenRefresh firing after we delete the token.
+    await _tokenRefreshSub?.cancel();
+    _tokenRefreshSub = null;
+    await _foregroundSub?.cancel();
+    _foregroundSub = null;
+    await _messageOpenedSub?.cancel();
+    _messageOpenedSub = null;
+
+    try {
+      // Get the current token before deleting it
+      final token = await _messaging.getToken();
+      if (token != null) {
+        // Tell backend to deactivate this device token
+        await _apiService.post(
+          ApiEndpoints.registerDevice,
+          data: {
+            'token': token,
+            'device_type': Platform.isIOS ? 'ios' : 'android',
+            'platform': Platform.isIOS ? 'ios' : 'android',
+            'active': false,
+          },
+        );
+        AppLogger.i('[FCM] Device token unregistered from backend');
+      }
+    } catch (e) {
+      AppLogger.e('[FCM] Error unregistering token from backend', e);
+    }
     try {
       await _messaging.deleteToken();
-      AppLogger.i('[FCM] Device token deleted');
+      AppLogger.i('[FCM] Local FCM token deleted');
     } catch (e) {
-      AppLogger.e('[FCM] Error deleting token', e);
+      AppLogger.e('[FCM] Error deleting local token', e);
     }
   }
 }

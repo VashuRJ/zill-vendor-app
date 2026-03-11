@@ -32,12 +32,18 @@ DioException fakeDioError(int statusCode, dynamic data) => DioException(
       ),
     );
 
-// Successful login response body
+// Successful login response body (vendor login wraps under "data" key)
 const kLoginSuccessBody = {
   'data': {
     'tokens': {'access': 'acc_token_123', 'refresh': 'ref_token_456'},
     'user': {'id': 1, 'username': 'raj_vendor', 'user_type': 'vendor'},
   },
+};
+
+// OTP login response (flat — no "data" wrapper)
+const kOtpLoginSuccessBody = {
+  'tokens': {'access': 'acc_token_123', 'refresh': 'ref_token_456'},
+  'user': {'id': 1, 'username': 'raj_vendor', 'user_type': 'vendor'},
 };
 
 void main() {
@@ -498,7 +504,7 @@ void main() {
 
     test('returns success and authenticates on valid OTP', () async {
       when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse(kLoginSuccessBody));
+          .thenAnswer((_) async => fakeResponse(kOtpLoginSuccessBody));
 
       final result = await vm.verifyOtpAndLogin(
         email: 'vendor@test.com',

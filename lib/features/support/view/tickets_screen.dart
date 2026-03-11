@@ -6,6 +6,7 @@ import '../../../core/constants/app_sizes.dart';
 import '../../../core/services/api_service.dart';
 import '../viewmodel/ticket_viewmodel.dart';
 import 'create_ticket_sheet.dart';
+import 'ticket_detail_screen.dart';
 
 class TicketsScreen extends StatelessWidget {
   const TicketsScreen({super.key, required this.apiService});
@@ -432,7 +433,27 @@ class _TicketList extends StatelessWidget {
             ),
             itemCount: list.length,
             separatorBuilder: (_, _) => const SizedBox(height: 10),
-            itemBuilder: (_, i) => _TicketCard(ticket: list[i]),
+            itemBuilder: (_, i) {
+              final ticket = list[i];
+              return GestureDetector(
+                onTap: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => TicketDetailScreen(
+                        ticketId: ticket.id,
+                        ticketNumber: ticket.ticketNumber,
+                      ),
+                    ),
+                  );
+                  // Refresh list when returning from detail (reply may have changed status)
+                  if (context.mounted) {
+                    context.read<TicketViewModel>().fetchTickets();
+                  }
+                },
+                child: _TicketCard(ticket: ticket),
+              );
+            },
           ),
         );
       },

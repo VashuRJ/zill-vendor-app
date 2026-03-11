@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
+import '../../../core/routing/app_router.dart';
 import '../viewmodel/profile_viewmodel.dart';
 
 class StoreSettingsScreen extends StatefulWidget {
@@ -307,6 +308,78 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                                 ),
                               ),
                             ],
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // ── Manage Delivery Zones Link ────────
+                          GestureDetector(
+                            onTap: () => Navigator.pushNamed(
+                              context,
+                              AppRouter.deliveryZones,
+                            ),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: AppColors.surface,
+                                borderRadius: BorderRadius.circular(
+                                  AppSizes.radiusMd,
+                                ),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: AppColors.shadowLight,
+                                    blurRadius: 10,
+                                    offset: Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.info.withAlpha(20),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: const Icon(
+                                      Icons.layers_rounded,
+                                      size: 20,
+                                      color: AppColors.info,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Manage Delivery Zones',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textPrimary,
+                                          ),
+                                        ),
+                                        SizedBox(height: 2),
+                                        Text(
+                                          'Set up distance-based zones with custom fees & ETAs',
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: AppColors.textHint,
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
 
                           const SizedBox(height: 32),

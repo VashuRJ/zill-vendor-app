@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'core/constants/app_strings.dart';
 import 'core/routing/app_router.dart';
 import 'core/services/api_service.dart';
+import 'core/services/order_alarm_service.dart';
 import 'core/services/push_notification_service.dart';
 import 'core/services/storage_service.dart';
 import 'core/theme/app_theme.dart';
@@ -16,6 +17,11 @@ import 'features/dashboard/viewmodel/dashboard_viewmodel.dart';
 import 'features/orders/viewmodel/orders_viewmodel.dart';
 import 'features/menu/viewmodel/menu_viewmodel.dart';
 import 'features/profile/viewmodel/profile_viewmodel.dart';
+import 'features/subscription/viewmodel/subscription_viewmodel.dart';
+import 'features/kyc/viewmodel/kyc_viewmodel.dart';
+import 'features/support/viewmodel/support_viewmodel.dart';
+import 'features/delivery_zones/viewmodel/delivery_zone_viewmodel.dart';
+import 'features/addons/viewmodel/addon_viewmodel.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -63,11 +69,18 @@ void main() async {
   // Use bundled Poppins fonts — no runtime network downloads (prevents ANR)
   GoogleFonts.config.allowRuntimeFetching = false;
 
-  // Initialize Firebase
-  await Firebase.initializeApp();
+  // Initialize Firebase (skip if already init'd — hot restart safe)
+  final isFirstInit = Firebase.apps.isEmpty;
+  if (isFirstInit) {
+    await Firebase.initializeApp();
+  }
 
-  // Register background message handler (must be top-level function)
-  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  // Register background handler only on cold start. On hot restart the native
+  // isolate is already running — re-registering triggers "duplicate background
+  // isolate" which blocks the UI thread for minutes (ANR).
+  if (isFirstInit) {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  }
 
   // Lock orientation to portrait
   SystemChrome.setPreferredOrientations([
@@ -95,6 +108,20 @@ void main() async {
     storageService: storageService,
   );
 
+  // Initialize the order alarm method channel bridge
+  OrderAlarmService.init();
+
+  // Wire up alarm listener — navigate to IncomingOrderScreen when alarm fires
+  OrderAlarmService.onAlarmOrderReceived = (data) {
+    navigatorKey.currentState?.pushNamed(
+      AppRouter.incomingOrder,
+      arguments: data,
+    );
+  };
+
+  // Check if app was cold-launched from an alarm notification
+  _checkAlarmLaunch(navigatorKey);
+
   runApp(
     VendorApp(
       storageService: storageService,
@@ -103,6 +130,20 @@ void main() async {
       navigatorKey: navigatorKey,
     ),
   );
+}
+
+/// If the app was cold-launched from an alarm notification, navigate to
+/// the IncomingOrderScreen once the navigator is ready.
+Future<void> _checkAlarmLaunch(GlobalKey<NavigatorState> navigatorKey) async {
+  // Small delay to let the navigator initialize after runApp
+  await Future.delayed(const Duration(milliseconds: 500));
+  final data = await OrderAlarmService.getAlarmOrderData();
+  if (data != null && data.orderId > 0) {
+    navigatorKey.currentState?.pushNamed(
+      AppRouter.incomingOrder,
+      arguments: data,
+    );
+  }
 }
 
 class VendorApp extends StatelessWidget {
@@ -150,6 +191,26 @@ class VendorApp extends StatelessWidget {
         // Profile ViewModel
         ChangeNotifierProvider(
           create: (_) => ProfileViewModel(apiService: apiService),
+        ),
+        // Subscription ViewModel
+        ChangeNotifierProvider(
+          create: (_) => SubscriptionViewModel(apiService: apiService),
+        ),
+        // KYC ViewModel
+        ChangeNotifierProvider(
+          create: (_) => KycViewModel(apiService: apiService),
+        ),
+        // Support ViewModel (Chat + Ticket Detail)
+        ChangeNotifierProvider(
+          create: (_) => SupportViewModel(apiService: apiService),
+        ),
+        // Delivery Zone ViewModel
+        ChangeNotifierProvider(
+          create: (_) => DeliveryZoneViewModel(apiService: apiService),
+        ),
+        // Addon ViewModel
+        ChangeNotifierProvider(
+          create: (_) => AddonViewModel(apiService: apiService),
         ),
       ],
       child: MaterialApp(

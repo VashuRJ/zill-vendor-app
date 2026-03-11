@@ -27,21 +27,22 @@ class OrdersScreen extends StatefulWidget {
 class _OrdersScreenState extends State<OrdersScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tab;
+  late final OrdersViewModel _ordersVM;
 
   @override
   void initState() {
     super.initState();
     _tab = TabController(length: 5, vsync: this);
+    _ordersVM = context.read<OrdersViewModel>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final vm = context.read<OrdersViewModel>();
-      vm.fetchOrders();
-      vm.startAutoRefresh();
+      _ordersVM.fetchOrders();
+      _ordersVM.startAutoRefresh();
     });
   }
 
   @override
   void dispose() {
-    context.read<OrdersViewModel>().stopAutoRefresh();
+    _ordersVM.stopAutoRefresh();
     _tab.dispose();
     super.dispose();
   }

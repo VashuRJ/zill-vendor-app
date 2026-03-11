@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/password_validator.dart';
+import '../../../core/widgets/password_strength_indicator.dart';
 import '../viewmodel/auth_viewmodel.dart';
 
 // ── Colour palette (matches login_screen.dart) ──────────────────────
@@ -812,10 +814,11 @@ class _NewPasswordStepViewState extends State<_NewPasswordStepView> {
   Widget build(BuildContext context) {
     return Form(
       key: _formKey,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
           // Drag handle
           Center(
             child: Container(
@@ -844,7 +847,7 @@ class _NewPasswordStepViewState extends State<_NewPasswordStepView> {
           ),
           const SizedBox(height: 6),
           Text(
-            'Your new password must be at least 8 characters long.',
+            'Your new password must include uppercase, lowercase, number & special character.',
             style: GoogleFonts.poppins(
               fontSize: 13,
               color: _muted,
@@ -867,11 +870,8 @@ class _NewPasswordStepViewState extends State<_NewPasswordStepView> {
             controller: _passwordCtrl,
             obscureText: _obscurePassword,
             textInputAction: TextInputAction.next,
-            validator: (v) {
-              if (v == null || v.isEmpty) return 'Password is required';
-              if (v.length < 8) return 'Must be at least 8 characters';
-              return null;
-            },
+            validator: PasswordValidator.validate,
+            onChanged: (_) => setState(() {}),
             style: GoogleFonts.poppins(
               fontSize: 14,
               color: _ink,
@@ -894,6 +894,7 @@ class _NewPasswordStepViewState extends State<_NewPasswordStepView> {
               ),
             ),
           ),
+          PasswordStrengthIndicator(password: _passwordCtrl.text),
           const SizedBox(height: 16),
 
           // Confirm password
@@ -1000,7 +1001,8 @@ class _NewPasswordStepViewState extends State<_NewPasswordStepView> {
               ),
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -1160,40 +1160,43 @@ class _FilterChips extends StatelessWidget {
     return Container(
       color: AppColors.surface,
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      child: Row(
-        children: [
-          _chip(
-            label: '🌱 Veg only',
-            active: vm.vegOnly,
-            onTap: () => context.read<MenuViewModel>().toggleVegOnly(),
-          ),
-          const SizedBox(width: 8),
-          _chip(
-            label: '🍗 Non-Veg',
-            active: vm.nonVegOnly,
-            onTap: () => context.read<MenuViewModel>().toggleNonVegOnly(),
-          ),
-          const SizedBox(width: 8),
-          _chip(
-            label: '✅ Available',
-            active: vm.availableOnly,
-            onTap: () => context.read<MenuViewModel>().toggleAvailableOnly(),
-          ),
-          if (vm.vegOnly || vm.nonVegOnly || vm.availableOnly) ...[
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _chip(
+              label: '🌱 Veg only',
+              active: vm.vegOnly,
+              onTap: () => context.read<MenuViewModel>().toggleVegOnly(),
+            ),
             const SizedBox(width: 8),
-            GestureDetector(
-              onTap: () => context.read<MenuViewModel>().clearFilters(),
-              child: const Text(
-                'Clear all',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w600,
+            _chip(
+              label: '🍗 Non-Veg',
+              active: vm.nonVegOnly,
+              onTap: () => context.read<MenuViewModel>().toggleNonVegOnly(),
+            ),
+            const SizedBox(width: 8),
+            _chip(
+              label: '✅ Available',
+              active: vm.availableOnly,
+              onTap: () => context.read<MenuViewModel>().toggleAvailableOnly(),
+            ),
+            if (vm.vegOnly || vm.nonVegOnly || vm.availableOnly) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => context.read<MenuViewModel>().clearFilters(),
+                child: const Text(
+                  'Clear all',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

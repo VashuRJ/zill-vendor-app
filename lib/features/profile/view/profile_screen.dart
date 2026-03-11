@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
 import '../../../core/constants/app_strings.dart';
@@ -25,10 +24,9 @@ import 'vendor_settings_screen.dart';
 import '../../analytics/view/analytics_screen.dart';
 import '../../promotions/view/promotions_screen.dart';
 import '../../staff/view/staff_screen.dart';
+import '../../subscription/view/my_subscription_screen.dart';
 import '../../support/view/help_support_screen.dart';
-
-const _kycDocumentsUrl =
-    'https://zill.co.in/vendor/login.html?redirect=documents.html';
+import '../../../core/routing/app_router.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -116,9 +114,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: show
                         ? KycWarningBanner(
                             key: const ValueKey('kyc'),
-                            onTap: () => _launchSecureUrl(
-                              _kycDocumentsUrl,
-                              AppStrings.documentsKyc,
+                            onTap: () => Navigator.pushNamed(
+                              context,
+                              AppRouter.kycDocuments,
                             ),
                           )
                         : const SizedBox.shrink(key: ValueKey('no-kyc')),
@@ -132,6 +130,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     children: [
                       // ── Business Details + Licences (data-dependent) ─
                       _buildDataSections(),
+                      const SizedBox(height: 24),
+
+                      // ── Subscription (premium placement) ─────────────
+                      _buildSubscriptionSection(),
                       const SizedBox(height: 24),
 
                       // ── Menus (static — disabled while loading) ──────
@@ -331,6 +333,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
   //  Static menu sections (no VM subscription — never rebuilt)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  Widget _buildSubscriptionSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          icon: Icons.workspace_premium_rounded,
+          iconColor: AppColors.warning,
+          iconBg: AppColors.warningLight,
+          title: 'Subscription',
+        ),
+        const SizedBox(height: 10),
+        MenuCard(
+          items: [
+            MenuItem(
+              icon: Icons.workspace_premium_rounded,
+              iconColor: AppColors.warning,
+              title: 'Manage Subscription',
+              subtitle: 'Plans, billing & payment history',
+              isLast: true,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MySubscriptionScreen(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildSettingsSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -368,6 +402,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 );
               },
+            ),
+            MenuItem(
+              icon: Icons.playlist_add_rounded,
+              iconColor: AppColors.purple,
+              title: 'Addon Groups',
+              subtitle: 'Manage toppings, extras & sides',
+              onTap: () => Navigator.pushNamed(
+                context,
+                AppRouter.addonGroups,
+              ),
             ),
             MenuItem(
               icon: Icons.people_alt_rounded,
@@ -414,10 +458,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
               iconColor: AppColors.warning,
               title: AppStrings.documentsKyc,
               subtitle: 'Upload & verify business documents',
-              isExternal: true,
               isLast: true,
-              onTap: () =>
-                  _launchSecureUrl(_kycDocumentsUrl, AppStrings.documentsKyc),
+              onTap: () => Navigator.pushNamed(
+                context,
+                AppRouter.kycDocuments,
+              ),
             ),
           ],
         ),
@@ -540,33 +585,4 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  URL helpers
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Launch a URL in the external browser, appending the vendor's access
-  /// token so the web portal can auto-authenticate.
-  Future<void> _launchSecureUrl(String url, String label) async {
-    final api = context.read<ApiService>();
-    final token = await api.getAccessToken();
-
-    var targetUrl = url;
-    if (token != null && token.isNotEmpty) {
-      final separator = url.contains('?') ? '&' : '?';
-      targetUrl = '$url${separator}token=$token';
-    }
-
-    final uri = Uri.parse(targetUrl);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (mounted) {
-        UIUtils.showSnackBar(
-          context,
-          message: '${AppStrings.couldNotOpen} $label page',
-          isError: true,
-        );
-      }
-    }
-  }
 }

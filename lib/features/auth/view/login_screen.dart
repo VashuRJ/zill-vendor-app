@@ -16,6 +16,7 @@ const _muted = Color(0xFF6B7280);
 const _label = Color(0xFF374151);
 const _surface = Color(0xFFF7F7F8);
 const _error = Color(0xFFDC2626);
+const _success = Color(0xFF059669);
 
 const _registerUrl = 'https://zill.co.in/vendor/register.html';
 
@@ -27,22 +28,29 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
   bool _obscurePass = true;
+  bool _loginSuccess = false;
 
+  // Page enter animation
   late final AnimationController _animCtrl;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
 
+  // Success overlay animation
+  late final AnimationController _successCtrl;
+  late final Animation<double> _overlayFade;
+  late final Animation<double> _checkPop;
+  late final Animation<double> _textSlide;
+
   @override
   void initState() {
     super.initState();
-    // Set once — not on every rebuild (avoids platform-channel overhead per keystroke)
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -50,6 +58,8 @@ class _LoginScreenState extends State<LoginScreen>
         statusBarBrightness: Brightness.light,
       ),
     );
+
+    // Page enter
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -60,11 +70,30 @@ class _LoginScreenState extends State<LoginScreen>
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
     _animCtrl.forward();
+
+    // Success overlay
+    _successCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _overlayFade = CurvedAnimation(
+      parent: _successCtrl,
+      curve: const Interval(0.0, 0.3, curve: Curves.easeOut),
+    );
+    _checkPop = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(
+      parent: _successCtrl,
+      curve: const Interval(0.2, 0.7, curve: Curves.elasticOut),
+    ));
+    _textSlide = CurvedAnimation(
+      parent: _successCtrl,
+      curve: const Interval(0.45, 0.85, curve: Curves.easeOutCubic),
+    );
   }
 
   @override
   void dispose() {
     _animCtrl.dispose();
+    _successCtrl.dispose();
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _emailFocus.dispose();
@@ -122,10 +151,11 @@ class _LoginScreenState extends State<LoginScreen>
     FocusScope.of(context).unfocus();
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
-    try {
-      final authVM = context.read<AuthViewModel>();
-      authVM.clearError();
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final authVM = context.read<AuthViewModel>();
+    authVM.clearError();
 
+    try {
       final success = await authVM.login(
         loginId: _emailCtrl.text.trim(),
         password: _passwordCtrl.text,
@@ -134,17 +164,68 @@ class _LoginScreenState extends State<LoginScreen>
       if (!mounted) return;
 
       if (success) {
-        ScaffoldMessenger.of(context).clearSnackBars();
+        messenger?.clearSnackBars();
+        setState(() => _loginSuccess = true);
+        _successCtrl.forward();
+        await Future.delayed(const Duration(milliseconds: 1400));
+        if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/home');
       } else {
-        _showSnack(authVM.errorMessage ?? 'Login failed. Please try again.');
+        _showSnackWithMessenger(
+          messenger,
+          authVM.errorMessage ?? 'Login failed. Please try again.',
+        );
       }
     } catch (e) {
       AppLogger.e('_handleLogin error: $e');
-      if (mounted) {
-        _showSnack('Something went wrong. Please try again.');
-      }
+      _showSnackWithMessenger(
+          messenger, 'Something went wrong. Please try again.');
     }
+  }
+
+  void _showSnackWithMessenger(
+    ScaffoldMessengerState? messenger,
+    String message, {
+    bool isError = true,
+  }) {
+    try {
+      messenger
+        ?..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                isError
+                    ? Icons.error_outline_rounded
+                    : Icons.info_outline_rounded,
+                color: Colors.white,
+                size: 19,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: isError ? _error : _brand,
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'Dismiss',
+            textColor: Colors.white,
+            onPressed: () => messenger.clearSnackBars(),
+          ),
+        ));
+    } catch (_) {}
   }
 
   Future<void> _openRegistration() async {
@@ -156,11 +237,80 @@ class _LoginScreenState extends State<LoginScreen>
     }
   }
 
-  // ── Header ─────────────────────────────────────────────────────────
+  // ── Success overlay (full-screen) ──────────────────────────────────
+  Widget _buildSuccessOverlay() {
+    return AnimatedBuilder(
+      animation: _successCtrl,
+      builder: (context, _) {
+        return FadeTransition(
+          opacity: _overlayFade,
+          child: Container(
+            color: Colors.white,
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Animated check circle
+                  ScaleTransition(
+                    scale: _checkPop,
+                    child: Container(
+                      width: 80,
+                      height: 80,
+                      decoration: const BoxDecoration(
+                        color: _success,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.check_rounded,
+                        size: 44,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // "You're in!" text slides up
+                  FadeTransition(
+                    opacity: _textSlide,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, 0.3),
+                        end: Offset.zero,
+                      ).animate(_textSlide),
+                      child: Column(
+                        children: [
+                          Text(
+                            'You\'re in!',
+                            style: GoogleFonts.poppins(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Setting up your dashboard...',
+                            style: GoogleFonts.poppins(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w400,
+                              color: _muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildHeader() {
     return Column(
       children: [
-        // Small restaurant icon
         Container(
           width: 56,
           height: 56,
@@ -171,7 +321,6 @@ class _LoginScreenState extends State<LoginScreen>
           child: const Icon(Icons.storefront_rounded, color: _brand, size: 28),
         ),
         const SizedBox(height: 16),
-        // Brand name
         RichText(
           text: TextSpan(
             children: [
@@ -199,7 +348,6 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ),
         const SizedBox(height: 6),
-        // Subtitle
         Text(
           'Vendor Partner App',
           style: GoogleFonts.poppins(
@@ -213,7 +361,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Form Card ──────────────────────────────────────────────────────
   Widget _buildFormCard() {
     return Container(
       padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
@@ -238,7 +385,6 @@ class _LoginScreenState extends State<LoginScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Welcome text
             Text(
               'Welcome back',
               style: GoogleFonts.poppins(
@@ -254,8 +400,6 @@ class _LoginScreenState extends State<LoginScreen>
               style: GoogleFonts.poppins(fontSize: 13, color: _muted),
             ),
             const SizedBox(height: 24),
-
-            // ── Email / Phone field ──
             _ZillField(
               label: 'Email or mobile number',
               hint: 'you@example.com',
@@ -271,8 +415,6 @@ class _LoginScreenState extends State<LoginScreen>
                   : null,
             ),
             const SizedBox(height: 16),
-
-            // ── Password field ──
             _ZillField(
               label: 'Password',
               hint: '••••••••',
@@ -298,8 +440,6 @@ class _LoginScreenState extends State<LoginScreen>
                 return null;
               },
             ),
-
-            // Forgot password
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
@@ -320,8 +460,7 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ),
             const SizedBox(height: 18),
-
-            // ── Sign In button ──
+            // ── Sign In button (simple — loading spinner only) ──
             Consumer<AuthViewModel>(
               builder: (context, auth, _) => _SignInButton(
                 isLoading: auth.isLoading,
@@ -334,12 +473,10 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── OR divider + OTP ───────────────────────────────────────────────
   Widget _buildOtpSection() {
     return Column(
       children: [
         const SizedBox(height: 24),
-        // "or" divider
         Row(
           children: [
             const Expanded(
@@ -362,7 +499,6 @@ class _LoginScreenState extends State<LoginScreen>
           ],
         ),
         const SizedBox(height: 20),
-        // OTP button
         OutlinedButton(
           onPressed: () => showOtpLoginSheet(context),
           style: OutlinedButton.styleFrom(
@@ -394,13 +530,11 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Registration link (bottom) ─────────────────────────────────────
   Widget _buildRegistration() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         children: [
-          // Divider
           Row(
             children: [
               const Expanded(
@@ -453,40 +587,47 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Build ──────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
-      body: SafeArea(
-        child: FadeTransition(
-          opacity: _fadeAnim,
-          child: SlideTransition(
-            position: _slideAnim,
-            child: CustomScrollView(
-              physics: const ClampingScrollPhysics(),
-              slivers: [
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 44),
-                        _buildHeader(),
-                        const Spacer(),
-                        _buildFormCard(),
-                        _buildOtpSection(),
-                        const Spacer(flex: 2),
-                        _buildRegistration(),
-                      ],
+      body: Stack(
+        children: [
+          // Login form
+          SafeArea(
+            child: FadeTransition(
+              opacity: _fadeAnim,
+              child: SlideTransition(
+                position: _slideAnim,
+                child: CustomScrollView(
+                  physics: const ClampingScrollPhysics(),
+                  slivers: [
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          children: [
+                            const SizedBox(height: 44),
+                            _buildHeader(),
+                            const Spacer(),
+                            _buildFormCard(),
+                            _buildOtpSection(),
+                            const Spacer(flex: 2),
+                            _buildRegistration(),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
-        ),
+
+          // Full-screen success overlay
+          if (_loginSuccess) _buildSuccessOverlay(),
+        ],
       ),
     );
   }
@@ -582,7 +723,8 @@ class _ZillField extends StatelessWidget {
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFFEBEDF0), width: 1),
+              borderSide:
+                  const BorderSide(color: Color(0xFFEBEDF0), width: 1),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
@@ -609,7 +751,7 @@ class _ZillField extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  Primary Sign-In button with gradient + shadow
+//  Simple Sign-In button — gradient + loading spinner
 // ─────────────────────────────────────────────────────────────────────
 class _SignInButton extends StatelessWidget {
   const _SignInButton({required this.isLoading, required this.onPressed});
@@ -653,30 +795,36 @@ class _SignInButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
             ),
           ),
-          child: isLoading
-              ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                )
-              : Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Sign In',
-                      style: GoogleFonts.poppins(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.3,
-                      ),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: isLoading
+                ? const SizedBox(
+                    key: ValueKey('loading'),
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(Colors.white),
                     ),
-                    const SizedBox(width: 8),
-                    const Icon(Icons.arrow_forward_rounded, size: 19),
-                  ],
-                ),
+                  )
+                : Row(
+                    key: const ValueKey('idle'),
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Sign In',
+                        style: GoogleFonts.poppins(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.arrow_forward_rounded, size: 19),
+                    ],
+                  ),
+          ),
         ),
       ),
     );

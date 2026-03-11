@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
+import '../../../core/utils/password_validator.dart';
+import '../../../core/widgets/password_strength_indicator.dart';
 import '../viewmodel/profile_viewmodel.dart';
 
 class ChangePasswordScreen extends StatefulWidget {
@@ -39,9 +41,10 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
       confirmPassword: _confirmCtrl.text.trim(),
     );
 
+    if (!mounted) return;
     setState(() => _saving = false);
 
-    if (mounted) {
+    {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -93,11 +96,12 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                 visible: _newVisible,
                 onToggle: () =>
                     setState(() => _newVisible = !_newVisible),
-                validator: (v) {
-                  if (v == null || v.isEmpty) return 'New password is required';
-                  if (v.length < 8) return 'Minimum 8 characters';
-                  return null;
-                },
+                validator: PasswordValidator.validate,
+                onChanged: (_) => setState(() {}),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: PasswordStrengthIndicator(password: _newCtrl.text),
               ),
               const SizedBox(height: AppSizes.md),
               _buildField(
@@ -185,11 +189,13 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
     required bool visible,
     required VoidCallback onToggle,
     String? Function(String?)? validator,
+    ValueChanged<String>? onChanged,
   }) {
     return TextFormField(
       controller: controller,
       obscureText: !visible,
       validator: validator,
+      onChanged: onChanged,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,

@@ -56,7 +56,7 @@ class Promotion {
 
   factory Promotion.fromJson(Map<String, dynamic> json) {
     return Promotion(
-      id: json['id'] as int,
+      id: (json['id'] as num?)?.toInt() ?? 0,
       code: (json['code'] as String?) ?? '',
       description: (json['description'] ?? json['name'] ?? '') as String,
       discountType: (json['discount_type'] as String?) ?? 'percentage',
@@ -160,7 +160,9 @@ class PromotionsViewModel extends ChangeNotifier {
 
   // ── Toggle ───────────────────────────────────────────────────────────────
   Future<bool> togglePromo(int id) async {
-    final promo = _promotions.firstWhere((p) => p.id == id);
+    final idx = _promotions.indexWhere((p) => p.id == id);
+    if (idx == -1) return false;
+    final promo = _promotions[idx];
     final newActive = promo.status != 'active';
 
     _isBusy = true;
@@ -172,6 +174,8 @@ class PromotionsViewModel extends ChangeNotifier {
         data: {'is_active': newActive},
       );
       await fetchPromotions(); // re-fetch to get server-computed status
+      _isBusy = false;
+      notifyListeners();
       return true;
     } on DioException catch (e) {
       _errorMessage = _parseDioError(e);
@@ -242,6 +246,8 @@ class PromotionsViewModel extends ChangeNotifier {
     try {
       await _apiService.post(ApiEndpoints.coupons, data: data);
       await fetchPromotions(); // re-fetch full list
+      _isBusy = false;
+      notifyListeners();
       return true;
     } on DioException catch (e) {
       _errorMessage = _parseDioError(e);

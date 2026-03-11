@@ -58,6 +58,7 @@ enum HoursStatus {
 // ─────────────────────────────────────────────────────────────────────
 class OperatingHoursViewModel extends ChangeNotifier {
   final ApiService _apiService;
+  bool _disposed = false;
 
   HoursStatus _status = HoursStatus.fetching;
   String? _errorMessage;
@@ -224,7 +225,7 @@ class OperatingHoursViewModel extends ChangeNotifier {
 
       // Auto-reset so the button returns to its normal state
       await Future.delayed(const Duration(seconds: 2));
-      if (_status == HoursStatus.saved) {
+      if (!_disposed && _status == HoursStatus.saved) {
         _status = HoursStatus.idle;
         notifyListeners();
       }
@@ -279,6 +280,12 @@ class OperatingHoursViewModel extends ChangeNotifier {
       if (data.containsKey('detail')) return data['detail'].toString();
     }
     return 'Server error (${e.response!.statusCode}). Please try again.';
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   void _clearTransientState() {

@@ -98,7 +98,7 @@ class AuthViewModel extends ChangeNotifier {
         refreshToken: tokens['refresh'] as String,
       );
       await _storageService.saveUserInfo(
-        userId: user['id'] as int,
+        userId: (user['id'] as num).toInt(),
         username: user['username'] as String,
         userType: user['user_type'] as String,
       );
@@ -148,6 +148,9 @@ class AuthViewModel extends ChangeNotifier {
   // ----------------------------------------------------------------
   Future<void> logout() async {
     try {
+      // Unregister FCM token FIRST — while JWT is still valid
+      await _pushService.unregister().catchError((_) {});
+
       final refreshToken = await _storageService.getRefreshToken();
       if (refreshToken != null) {
         await _apiService.post(
@@ -161,8 +164,6 @@ class AuthViewModel extends ChangeNotifier {
       // Block any auto-refresh timer requests that fire during cleanup so they
       // don't trigger a spurious _clearAndLogout() while the user is on login.
       _apiService.signalLoggingOut();
-      // Unregister FCM token so vendor stops receiving pushes
-      await _pushService.unregister().catchError((_) {});
       await _storageService.clearAll();
       _username = null;
       _status = AuthStatus.unauthenticated;
@@ -316,40 +317,12 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   String _parseResetError(DioException e) {
-    if (e.response == null) {
-      return 'Network error. Please check your connection.';
-    }
-
+    if (e.response == null) return 'Network error. Please check your connection.';
     final data = e.response!.data;
     if (data is Map<String, dynamic>) {
-      if (data.containsKey('message')) return data['message'].toString();
-      if (data.containsKey('error')) {
-        final err = data['error'];
-        if (err is Map<String, dynamic>) {
-          // Check details first — contains specific field errors
-          // e.g. { "details": { "email": ["No account found with this email"] } }
-          if (err.containsKey('details')) {
-            final details = err['details'];
-            if (details is Map<String, dynamic>) {
-              final extracted = _extractFirstString(details);
-              if (extracted != null) return extracted;
-            }
-          }
-          if (err.containsKey('message')) return err['message'].toString();
-          final extracted = _extractFirstString(err);
-          if (extracted != null) return extracted;
-        }
-        if (err is String) return err;
-      }
-      if (data.containsKey('email')) {
-        final emailErr = data['email'];
-        if (emailErr is List && emailErr.isNotEmpty) {
-          return emailErr.first.toString();
-        }
-      }
-      if (data.containsKey('detail')) return data['detail'].toString();
+      final msg = _parseErrorBody(data);
+      if (msg != null) return msg;
     }
-
     switch (e.response!.statusCode) {
       case 404:
         return 'No account found with this email address.';
@@ -447,7 +420,7 @@ class AuthViewModel extends ChangeNotifier {
         refreshToken: tokens['refresh'] as String,
       );
       await _storageService.saveUserInfo(
-        userId: user['id'] as int,
+        userId: (user['id'] as num).toInt(),
         username: user['username'] as String,
         userType: user['user_type'] as String,
       );
@@ -483,42 +456,12 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   String _parseOtpError(DioException e) {
-    if (e.response == null) {
-      return 'Network error. Please check your connection.';
-    }
-
+    if (e.response == null) return 'Network error. Please check your connection.';
     final data = e.response!.data;
     if (data is Map<String, dynamic>) {
-      if (data.containsKey('message')) return data['message'].toString();
-      if (data.containsKey('error')) {
-        final err = data['error'];
-        if (err is Map<String, dynamic>) {
-          if (err.containsKey('details')) {
-            final details = err['details'];
-            if (details is Map<String, dynamic>) {
-              final extracted = _extractFirstString(details);
-              if (extracted != null) return extracted;
-            }
-          }
-          if (err.containsKey('message')) return err['message'].toString();
-          final extracted = _extractFirstString(err);
-          if (extracted != null) return extracted;
-        }
-        if (err is String) return err;
-      }
-      if (data.containsKey('detail')) return data['detail'].toString();
-      if (data.containsKey('otp')) {
-        final otpErr = data['otp'];
-        if (otpErr is List && otpErr.isNotEmpty) return otpErr.first.toString();
-      }
-      if (data.containsKey('email')) {
-        final emailErr = data['email'];
-        if (emailErr is List && emailErr.isNotEmpty) {
-          return emailErr.first.toString();
-        }
-      }
+      final msg = _parseErrorBody(data);
+      if (msg != null) return msg;
     }
-
     switch (e.response!.statusCode) {
       case 400:
         return 'Invalid OTP or email address.';
@@ -543,14 +486,9 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   // ----------------------------------------------------------------
-  // Parse DioException → human-readable message
-  // Handles Django REST Framework error response shapes:
-  //   { "success": false, "message": "..." }
-  //   { "non_field_errors": ["..."] }
-  //   { "errors": { "error": "...", "warning": "..." } }
+  // Parse DioException → human-readable message (login-specific fallbacks)
   // ----------------------------------------------------------------
   String _parseDioError(DioException e) {
-    // Network / timeout errors (no response from server)
     if (e.response == null) {
       switch (e.type) {
         case DioExceptionType.connectionTimeout:
@@ -565,87 +503,20 @@ class AuthViewModel extends ChangeNotifier {
     }
 
     final statusCode = e.response!.statusCode;
-    final data = e.response!.data;
 
-    // ── 401: always show a friendly credentials message, regardless
-    //         of whatever raw body the server sends back.
+    // 401: always show a friendly credentials message regardless of body.
     if (statusCode == 401) {
       return 'Incorrect email or password. Please try again.';
     }
 
-    // Handle Django DRF error shapes
+    final data = e.response!.data;
     if (data is Map<String, dynamic>) {
-      // Shape 1: { "success": false, "message": "Invalid password" }
-      if (data.containsKey('message') && data['message'] is String) {
-        return data['message'] as String;
-      }
-
-      // Shape 2a: { "error": { "code": "VAL_2001", "message": "...", "details": {...} } }
-      //   — shape used by this Django backend (singular "error" key)
-      //   Check details FIRST — contains specific field errors like "Invalid password"
-      //   err['message'] is generic ("Validation failed"), details has the actual reason
-      if (data.containsKey('error')) {
-        final err = data['error'];
-        if (err is Map<String, dynamic>) {
-          // Check details first — { "details": { "error": ["Invalid password"] } }
-          if (err.containsKey('details')) {
-            final details = err['details'];
-            if (details is Map<String, dynamic>) {
-              final extracted = _extractFirstString(details);
-              if (extracted != null) return extracted;
-            }
-          }
-          if (err.containsKey('message')) return err['message'].toString();
-          if (err.containsKey('code')) {
-            // Map backend error codes to friendly messages
-            final code = err['code'].toString();
-            if (code.startsWith('AUTH') || code.startsWith('VAL')) {
-              return 'Incorrect email or password. Please try again.';
-            }
-          }
-          final extracted = _extractFirstString(err);
-          if (extracted != null) return extracted;
-        }
-        if (err is String) return err;
-      }
-
-      // Shape 2b: { "errors": { "error": "...", "warning": "..." } }
-      if (data.containsKey('errors')) {
-        final errors = data['errors'];
-        if (errors is Map<String, dynamic>) {
-          if (errors.containsKey('error')) return errors['error'].toString();
-          if (errors.containsKey('non_field_errors')) {
-            final nfe = errors['non_field_errors'];
-            return (nfe is List && nfe.isNotEmpty)
-                ? nfe.first.toString()
-                : nfe.toString();
-          }
-          // Return first error value found
-          final firstVal = errors.values.first;
-          return (firstVal is List && firstVal.isNotEmpty)
-              ? firstVal.first.toString()
-              : firstVal.toString();
-        }
-      }
-
-      // Shape 3: { "non_field_errors": ["..."] }  (DRF default serializer errors)
-      if (data.containsKey('non_field_errors')) {
-        final nfe = data['non_field_errors'];
-        return (nfe is List && nfe.isNotEmpty)
-            ? nfe.first.toString()
-            : nfe.toString();
-      }
-
-      // Shape 4: { "detail": "..." }  (DRF auth errors)
-      if (data.containsKey('detail')) {
-        return data['detail'].toString();
-      }
+      final msg = _parseErrorBody(data);
+      if (msg != null) return msg;
     }
 
-    // Fallback by status code
     switch (statusCode) {
       case 400:
-      case 401:
         return 'Incorrect email or password. Please try again.';
       case 403:
         return 'Access denied. This account may not have vendor access.';
@@ -658,8 +529,80 @@ class AuthViewModel extends ChangeNotifier {
     }
   }
 
+  // ----------------------------------------------------------------
+  // Shared body parser — extracts the first human-readable message from
+  // any Django REST Framework error response shape:
+  //   { "message": "..." }
+  //   { "error": { "details": {...}, "message": "..." } }
+  //   { "errors": { "error": "...", "non_field_errors": [...] } }
+  //   { "non_field_errors": ["..."] }
+  //   { "otp"/"email": ["..."] }
+  //   { "detail": "..." }
+  // Returns null if nothing recognised — caller falls back to status code.
+  // ----------------------------------------------------------------
+  static String? _parseErrorBody(Map<String, dynamic> data) {
+    // { "message": "..." }
+    if (data.containsKey('message') && data['message'] is String) {
+      return data['message'] as String;
+    }
+
+    // { "error": { "details": {...}, "message": "...", ... } }
+    if (data.containsKey('error')) {
+      final err = data['error'];
+      if (err is Map<String, dynamic>) {
+        // Check details first — contains the specific field-level error
+        if (err.containsKey('details')) {
+          final details = err['details'];
+          if (details is Map<String, dynamic>) {
+            final extracted = _extractFirstString(details);
+            if (extracted != null) return extracted;
+          }
+        }
+        if (err.containsKey('message')) return err['message'].toString();
+        final extracted = _extractFirstString(err);
+        if (extracted != null) return extracted;
+      }
+      if (err is String) return err;
+    }
+
+    // { "errors": { "error": "...", "non_field_errors": [...] } }
+    if (data.containsKey('errors')) {
+      final errors = data['errors'];
+      if (errors is Map<String, dynamic>) {
+        if (errors.containsKey('error')) return errors['error'].toString();
+        if (errors.containsKey('non_field_errors')) {
+          final nfe = errors['non_field_errors'];
+          return (nfe is List && nfe.isNotEmpty) ? nfe.first.toString() : nfe.toString();
+        }
+        final firstVal = errors.values.first;
+        return (firstVal is List && firstVal.isNotEmpty)
+            ? firstVal.first.toString()
+            : firstVal.toString();
+      }
+    }
+
+    // { "non_field_errors": ["..."] }
+    if (data.containsKey('non_field_errors')) {
+      final nfe = data['non_field_errors'];
+      return (nfe is List && nfe.isNotEmpty) ? nfe.first.toString() : nfe.toString();
+    }
+
+    // Field-level list errors — otp, email
+    for (final key in ['otp', 'email']) {
+      if (data.containsKey(key)) {
+        final val = data[key];
+        if (val is List && val.isNotEmpty) return val.first.toString();
+      }
+    }
+
+    // { "detail": "..." }
+    if (data.containsKey('detail')) return data['detail'].toString();
+
+    return null;
+  }
+
   /// Recursively extracts the first human-readable string from a
-  /// Django REST Framework error map.  Handles nested maps and lists:
+  /// Django REST Framework error map.
   ///   { "error": ["Invalid password"] }  →  "Invalid password"
   ///   { "details": { "error": ["..."] } }  →  "..."
   static String? _extractFirstString(Map<String, dynamic> map) {
