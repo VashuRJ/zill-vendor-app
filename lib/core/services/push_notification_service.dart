@@ -113,10 +113,14 @@ class PushNotificationService {
     });
 
     // 7. Foreground message listener — shows heads-up notification
-    _foregroundSub = FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+    _foregroundSub = FirebaseMessaging.onMessage.listen(
+      _handleForegroundMessage,
+    );
 
     // 8. When user taps a notification (app was in background)
-    _messageOpenedSub = FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
+    _messageOpenedSub = FirebaseMessaging.onMessageOpenedApp.listen(
+      _handleMessageOpenedApp,
+    );
 
     // 8. Check if app was launched from a terminated-state notification
     final initialMessage = await _messaging.getInitialMessage();
@@ -267,7 +271,9 @@ class PushNotificationService {
     // because the native FCM handler may have already started it, but
     // we also want to navigate to the incoming order screen).
     if (type == 'new_order' || type == 'vendor_new_order') {
-      AppLogger.i('[FCM] New order in foreground — triggering alarm + navigation');
+      AppLogger.i(
+        '[FCM] New order in foreground — triggering alarm + navigation',
+      );
       final data = message.data;
       final alarmData = AlarmOrderData(
         orderId: int.tryParse(data['order_id'] ?? '0') ?? 0,
@@ -381,7 +387,7 @@ class PushNotificationService {
     _messageOpenedSub = null;
 
     try {
-      // Get the current token before deleting it
+      // Get the current token before deactivating it
       final token = await _messaging.getToken();
       if (token != null) {
         // Tell backend to deactivate this device token
@@ -394,16 +400,19 @@ class PushNotificationService {
             'active': false,
           },
         );
-        AppLogger.i('[FCM] Device token unregistered from backend');
+        AppLogger.i('[FCM] Device token deactivated on backend');
       }
     } catch (e) {
-      AppLogger.e('[FCM] Error unregistering token from backend', e);
+      AppLogger.e('[FCM] Error deactivating token on backend', e);
     }
-    try {
-      await _messaging.deleteToken();
-      AppLogger.i('[FCM] Local FCM token deleted');
-    } catch (e) {
-      AppLogger.e('[FCM] Error deleting local token', e);
-    }
+    // NOTE: Do NOT call _messaging.deleteToken() here.
+    // Deleting the FCM token causes Firebase to generate a completely new token
+    // on next login. The old token becomes permanently invalid, but the new token
+    // may not be ready immediately — causing notifications to silently fail.
+    // Instead, we only deactivate on the backend. On next login, the SAME token
+    // is re-registered and re-activated instantly.
+    AppLogger.i(
+      '[FCM] Logout cleanup complete (token kept locally, deactivated on server)',
+    );
   }
 }
