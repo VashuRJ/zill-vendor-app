@@ -106,6 +106,7 @@ class AuthViewModel extends ChangeNotifier {
       // Invalidate any in-flight 401 handlers from a previous session so they
       // don't consume the new refresh token or navigate back to login.
       _apiService.incrementLoginGeneration();
+      _apiService.resetLoggingOut();
 
       _username = user['username'] as String;
       _status = AuthStatus.authenticated;
@@ -168,9 +169,8 @@ class AuthViewModel extends ChangeNotifier {
       _username = null;
       _status = AuthStatus.unauthenticated;
       notifyListeners();
-      // Reset after a short delay — tokens are already cleared so Fix 1
-      // (reject when no token) handles any timer requests that fire after this.
-      Future.delayed(const Duration(seconds: 2), _apiService.resetLoggingOut);
+      // _isLoggingOut stays true until next successful login calls resetLoggingOut()
+      // This blocks ALL requests until user logs in again.
     }
   }
 
@@ -428,6 +428,7 @@ class AuthViewModel extends ChangeNotifier {
       // Invalidate any in-flight 401 handlers from a previous session so they
       // don't consume the new refresh token or navigate back to login.
       _apiService.incrementLoginGeneration();
+      _apiService.resetLoggingOut();
 
       _username = user['username'] as String;
       _status = AuthStatus.authenticated;

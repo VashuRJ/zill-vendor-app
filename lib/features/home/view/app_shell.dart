@@ -48,7 +48,6 @@ class _AppShellState extends State<AppShell> {
 
       pushService.onRefreshOrders = () {
         ordersVm.fetchOrders();
-        dashboardVm.fetchDashboard();
       };
 
       // Deep-link: notification tap → Orders tab + order detail

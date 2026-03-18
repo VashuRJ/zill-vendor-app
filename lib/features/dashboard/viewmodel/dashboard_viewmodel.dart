@@ -89,6 +89,8 @@ class DashboardData {
   final bool isStoreOpen;
   final String storeName;
   final bool isVerified;
+  // 3-state status: 'online', 'busy', 'offline'
+  final String storeStatus;
   // menu stats
   final int totalItems;
   final int availableItems;
@@ -107,6 +109,7 @@ class DashboardData {
     this.isStoreOpen = false,
     this.storeName = '',
     this.isVerified = false,
+    this.storeStatus = 'offline',
     this.totalItems = 0,
     this.availableItems = 0,
     this.categories = 0,
@@ -122,14 +125,21 @@ class DashboardData {
         json['profile_completion'] as Map<String, dynamic>? ?? {};
     final todayHours = json['today_hours'] as Map<String, dynamic>? ?? {};
 
+    // Parse 3-state status — fallback to boolean for backward compat
+    final rawStatus = restaurant['store_status'] as String?;
+    final isOpenNow = restaurant['is_open_now'] as bool? ?? false;
+    final storeStatus = rawStatus ??
+        (isOpenNow ? 'online' : 'offline');
+
     return DashboardData(
       todayOrders: (json['today_orders'] as num?)?.toInt() ?? 0,
       todayRevenue: (json['today_revenue'] as num?)?.toDouble() ?? 0.0,
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
       menuCount: (json['menu_count'] as num?)?.toInt() ?? 0,
-      isStoreOpen: restaurant['is_open_now'] as bool? ?? false,
+      isStoreOpen: storeStatus == 'online',
       storeName: restaurant['name'] as String? ?? '',
       isVerified: restaurant['is_verified'] as bool? ?? false,
+      storeStatus: storeStatus,
       totalItems: (menuStats['total_items'] as num?)?.toInt() ?? 0,
       availableItems: (menuStats['available_items'] as num?)?.toInt() ?? 0,
       categories: (menuStats['categories'] as num?)?.toInt() ?? 0,
@@ -255,7 +265,13 @@ class DashboardViewModel extends ChangeNotifier {
       try {
         final body = (results[3] as Response).data;
         if (body is Map<String, dynamic>) {
-          _unreadNotifications = (body['unread'] as num?)?.toInt() ?? 0;
+          // Backend returns {"stats": {"unread_count": N}}
+          final stats = body['stats'] as Map<String, dynamic>?;
+          _unreadNotifications =
+              (stats?['unread_count'] as num?)?.toInt() ??
+              (body['unread_count'] as num?)?.toInt() ??
+              (body['unread'] as num?)?.toInt() ??
+              0;
         }
       } catch (e) {
         debugPrint('[Dashboard] notifications stats parse: $e');
@@ -268,17 +284,27 @@ class DashboardViewModel extends ChangeNotifier {
   }
 
   // ── Toggle store open/closed  POST /api/vendors/toggle-availability/ ───
+  /// Legacy 2-state toggle (online ↔ offline). Kept for backward compat.
   Future<void> toggleStore() async {
+    final newStatus = _data.storeStatus == 'online' ? 'offline' : 'online';
+    await setStoreStatus(newStatus);
+  }
+
+  /// Set store to a specific 3-state status: 'online', 'busy', or 'offline'.
+  Future<void> setStoreStatus(String status) async {
     if (_isToggling) return; // prevent double-tap
     _isToggling = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      final shouldClose = _data.isStoreOpen;
       await _apiService.post(
         ApiEndpoints.restaurantToggle,
-        data: {'is_temporarily_closed': shouldClose},
+        data: {
+          'store_status': status,
+          // Backward compat: backend may still read this field
+          'is_temporarily_closed': status != 'online',
+        },
       );
       // Re-fetch to get the server-confirmed state
       await fetchDashboard();

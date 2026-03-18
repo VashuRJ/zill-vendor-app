@@ -68,6 +68,10 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
   bool _hasRatedSession = false;
   // Map replyId → label so polling can fix display text persistently
   final Map<String, String> _replyIdLabels = {};
+  // Deduplication: track rendered message IDs to skip duplicates
+  final Set<String> _seenMessageIds = {};
+  // Last message UUID for poll?after= parameter
+  String _lastMessageId = '';
 
   // ── Ticket Detail State ───────────────────────────────────────────────────
   TicketDetailStatus _ticketDetailStatus = TicketDetailStatus.idle;
@@ -99,6 +103,15 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<bool> startChatSession() async {
     if (_chatStatus == ChatStatus.starting) return false; // double-tap guard
+
+    // Resume existing session if still in memory
+    if (_activeSession != null && _activeSession!.isActive && _messages.isNotEmpty) {
+      _chatStatus = ChatStatus.active;
+      _startPolling();
+      notifyListeners();
+      return true;
+    }
+
     _chatStatus = ChatStatus.starting;
     _chatError = null;
     notifyListeners();
@@ -113,6 +126,14 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
       _activeSession = ChatSession.fromJson(data);
       _messages = List<ChatMessage>.from(_activeSession!.messages);
+      // Seed deduplication set and last message ID
+      _seenMessageIds.clear();
+      for (final m in _messages) {
+        if (m.rawId.isNotEmpty) _seenMessageIds.add(m.rawId);
+      }
+      _lastMessageId = '';
+      _updateLastMessageId();
+      _replyIdLabels.clear();
       _chatStatus = ChatStatus.active;
       _startPolling();
       notifyListeners();
@@ -166,20 +187,30 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
       final body = _asMap(response.data);
       final data = body['data'] as Map<String, dynamic>? ?? body;
 
-      // Server returns ALL session messages — full replace only if more
+      // Server returns ONLY NEW bot responses — keep optimistic user msg, append bot msgs
       final rawMessages = data['messages'] as List<dynamic>? ?? [];
-      final serverMessages = rawMessages.map((e) {
+      final newMessages = rawMessages.map((e) {
         if (e is Map<String, dynamic>) return e;
         if (e is Map) return Map<String, dynamic>.from(e);
         return null;
       }).whereType<Map<String, dynamic>>()
           .map(ChatMessage.fromJson)
+          .where((m) => m.rawId.isNotEmpty && !_seenMessageIds.contains(m.rawId))
           .toList();
 
-      // Guard: never lose messages — only replace if server has >= local count
-      if (serverMessages.isNotEmpty) {
-        _messages = serverMessages;
+      // DON'T remove optimistic message — server only sends bot responses
+      // If server returns the user message too, replace optimistic with it
+      final serverUserMsg = newMessages.where((m) => m.isUser).firstOrNull;
+      if (serverUserMsg != null) {
+        _messages.removeWhere((m) => m.id == optimisticMsg.id);
       }
+
+      // Append only new messages
+      for (final m in newMessages) {
+        if (m.rawId.isNotEmpty) _seenMessageIds.add(m.rawId);
+        _messages.add(m);
+      }
+      _updateLastMessageId();
 
       // Update session status if returned
       if (data['session_status'] is String) {
@@ -189,8 +220,11 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
           status: newStatus,
           startedAt: _activeSession!.startedAt,
         );
-        // Stop polling if session ended/escalated
-        if (newStatus != 'active') _stopPolling();
+        if (newStatus == 'escalated') {
+          _startPolling();
+        } else if (newStatus != 'active') {
+          _stopPolling();
+        }
       }
 
       _chatStatus = ChatStatus.active;
@@ -248,22 +282,29 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
       final body = _asMap(response.data);
       final data = body['data'] as Map<String, dynamic>? ?? body;
 
-      // Server returns ALL session messages — full replace only if non-empty
+      // Server now returns ONLY NEW bot responses — append, don't replace
       final rawMessages = data['messages'] as List<dynamic>? ?? [];
-      final serverMessages = rawMessages.map((e) {
+      final newMessages = rawMessages.map((e) {
         if (e is Map<String, dynamic>) return e;
         if (e is Map) return Map<String, dynamic>.from(e);
         return null;
       }).whereType<Map<String, dynamic>>()
           .map(ChatMessage.fromJson)
+          .where((m) => m.rawId.isNotEmpty && !_seenMessageIds.contains(m.rawId))
           .toList();
 
-      if (serverMessages.isNotEmpty) {
-        _messages = serverMessages;
+      // Keep optimistic message — server only sends bot responses
+      final serverUserMsg = newMessages.where((m) => m.isUser).firstOrNull;
+      if (serverUserMsg != null) {
+        _messages.removeWhere((m) => m.id == optimisticMsg.id);
       }
 
-      // Backend saves replyId as user message text — replace with label
+      for (final m in newMessages) {
+        if (m.rawId.isNotEmpty) _seenMessageIds.add(m.rawId);
+        _messages.add(m);
+      }
       _fixAllReplyDisplayTexts();
+      _updateLastMessageId();
 
       if (data['session_status'] is String) {
         final newStatus = data['session_status'] as String;
@@ -272,7 +313,11 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
           status: newStatus,
           startedAt: _activeSession!.startedAt,
         );
-        if (newStatus != 'active') _stopPolling();
+        if (newStatus == 'escalated') {
+          _startPolling();
+        } else if (newStatus != 'active') {
+          _stopPolling();
+        }
       }
 
       _chatStatus = ChatStatus.active;
@@ -403,9 +448,7 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final endpoint = ApiEndpoints.chatSessionEnd(_activeSession!.sessionId);
       await _apiService.post(endpoint);
-      _stopPolling();
-      _chatStatus = ChatStatus.idle;
-      notifyListeners();
+      resetChat();
       return true;
     } on DioException catch (e) {
       _chatError = _parseDioError(e);
@@ -422,8 +465,15 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Clear chat state when navigating away
+  /// Pause chat when navigating away — keep session alive for resume
   void clearChat() {
+    _stopPolling();
+    _chatError = null;
+    // DON'T clear session/messages — they're needed when user comes back
+  }
+
+  /// Fully reset chat state (after explicit end/resolve)
+  void resetChat() {
     _stopPolling();
     _activeSession = null;
     _messages = [];
@@ -431,7 +481,11 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
     _chatError = null;
     _hasRatedSession = false;
     _replyIdLabels.clear();
-    notifyListeners();
+    _seenMessageIds.clear();
+    _lastMessageId = '';
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      notifyListeners();
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -452,7 +506,7 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _pollMessages() async {
-    if (_activeSession == null || !_activeSession!.isActive) {
+    if (_activeSession == null) {
       _stopPolling();
       return;
     }
@@ -460,35 +514,51 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
     if (_chatStatus == ChatStatus.sending) return;
 
     try {
-      final endpoint = ApiEndpoints.chatSessionDetail(_activeSession!.sessionId);
-      final response = await _apiService.get(endpoint);
+      // Use new poll endpoint with after= for incremental fetch
+      final endpoint = ApiEndpoints.chatSessionPoll(_activeSession!.sessionId);
+      final response = await _apiService.get(
+        endpoint,
+        queryParameters: {'after': _lastMessageId.toString()},
+      );
       final body = _asMap(response.data);
       final data = body['data'] as Map<String, dynamic>? ?? body;
 
-      final session = ChatSession.fromJson(data);
       _pollFailures = 0; // Reset on success
 
-      // Full replace: always sync with server truth.
-      // Detects new messages OR replaced messages (e.g. loading → final answer)
-      // by comparing both count and last message ID.
-      if (session.messages.isNotEmpty) {
-        final hasChanges = session.messages.length != _messages.length ||
-            (session.messages.isNotEmpty &&
-                _messages.isNotEmpty &&
-                session.messages.last.id != _messages.last.id);
-        if (hasChanges) {
-          _messages = List<ChatMessage>.from(session.messages);
-          _fixAllReplyDisplayTexts(); // Fix raw reply IDs from server
-          _activeSession = session;
-          _chatError = null; // Clear stale errors on new data
+      // Append only new messages (deduplication)
+      final rawMessages = data['messages'] as List<dynamic>? ?? [];
+      final newMessages = rawMessages.map((e) {
+        if (e is Map<String, dynamic>) return e;
+        if (e is Map) return Map<String, dynamic>.from(e);
+        return null;
+      }).whereType<Map<String, dynamic>>()
+          .map(ChatMessage.fromJson)
+          .where((m) => m.rawId.isNotEmpty && !_seenMessageIds.contains(m.rawId))
+          .toList();
+
+      if (newMessages.isNotEmpty) {
+        for (final m in newMessages) {
+          if (m.rawId.isNotEmpty) _seenMessageIds.add(m.rawId);
+          _messages.add(m);
+        }
+        _fixAllReplyDisplayTexts();
+        _updateLastMessageId();
+        _chatError = null;
+        notifyListeners();
+      }
+
+      // Update session status
+      final sessionStatus = data['session_status'] as String?;
+      if (sessionStatus != null) {
+        _activeSession = ChatSession(
+          sessionId: _activeSession!.sessionId,
+          status: sessionStatus,
+          startedAt: _activeSession!.startedAt,
+        );
+        if (sessionStatus == 'resolved' || sessionStatus == 'expired' || sessionStatus == 'abandoned') {
+          _stopPolling();
           notifyListeners();
         }
-      }
-      // Stop polling if session ended
-      if (!session.isActive) {
-        _activeSession = session;
-        _stopPolling();
-        notifyListeners();
       }
     } catch (e) {
       _pollFailures++;
@@ -661,6 +731,20 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
+  /// Update _lastMessageId from the current message list.
+  void _updateLastMessageId() {
+    if (_messages.isNotEmpty) {
+      // Use the rawId of the last real (non-optimistic) message
+      final lastReal = _messages.lastWhere(
+        (m) => m.rawId.isNotEmpty,
+        orElse: () => _messages.last,
+      );
+      if (lastReal.rawId.isNotEmpty) {
+        _lastMessageId = lastReal.rawId;
+      }
+    }
+  }
+
   /// Replace raw reply IDs in user messages with human-readable labels.
   /// Backend stores "intent:order_status" as text — we replace with "Order Issue".
   /// Uses _replyIdLabels map so fixes persist across polls.
@@ -684,10 +768,12 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
       if (label != null) {
         _messages[i] = ChatMessage(
           id: m.id,
+          rawId: m.rawId,
           senderType: m.senderType,
           messageType: 'text',
           content: TextContent(text: label),
           createdAt: m.createdAt,
+          senderName: m.senderName,
         );
       }
     }

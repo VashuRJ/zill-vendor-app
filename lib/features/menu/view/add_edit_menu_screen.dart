@@ -116,10 +116,15 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
               ))
           .toList();
 
-      // Load linked addon groups
-      _loadAddonData(it.id);
+      // Load linked addon groups after the first frame to avoid
+      // notifyListeners() firing during the build phase.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadAddonData(it.id);
+      });
     } else {
-      _loadAllAddonGroups();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadAllAddonGroups();
+      });
     }
   }
 
@@ -486,10 +491,14 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
             ),
         ],
       ),
-      body: Form(
-        key: _formKey,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -503,8 +512,10 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
               TextFormField(
                 controller: _nameCtrl,
                 decoration: _inputDecor('Item Name *'),
+                keyboardType: TextInputType.name,
                 textCapitalization: TextCapitalization.words,
                 textInputAction: TextInputAction.next,
+                onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                 validator: (v) =>
                     (v == null || v.trim().isEmpty) ? 'Name is required' : null,
               ),
@@ -512,9 +523,11 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
               TextFormField(
                 controller: _descCtrl,
                 decoration: _inputDecor('Description'),
+                keyboardType: TextInputType.multiline,
                 maxLines: 3,
                 textCapitalization: TextCapitalization.sentences,
-                textInputAction: TextInputAction.next,
+                textInputAction: TextInputAction.newline,
+                onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
               ),
 
               // ── Pricing ──────────────────────────────────────────
@@ -527,10 +540,12 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                     child: TextFormField(
                       controller: _priceCtrl,
                       decoration: _inputDecor('Price (₹) *'),
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d*')),
+                      ],
                       textInputAction: TextInputAction.next,
+                      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                       validator: (v) {
                         if (v == null || v.trim().isEmpty) return 'Required';
                         if (double.tryParse(v.trim()) == null) return 'Invalid';
@@ -543,10 +558,12 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                     child: TextFormField(
                       controller: _discPriceCtrl,
                       decoration: _inputDecor('Discounted (₹)'),
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d*')),
+                      ],
                       textInputAction: TextInputAction.next,
+                      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                       validator: (v) {
                         if (v == null || v.trim().isEmpty) return null;
                         if (double.tryParse(v.trim()) == null) return 'Invalid';
@@ -595,7 +612,9 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                       controller: _prepTimeCtrl,
                       decoration: _inputDecor('Prep Time (mins)'),
                       keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       textInputAction: TextInputAction.next,
+                      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                       validator: (v) {
                         if (v == null || v.trim().isEmpty) return null;
                         final n = int.tryParse(v.trim());
@@ -612,7 +631,9 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                       controller: _servesCtrl,
                       decoration: _inputDecor('Serves'),
                       keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       textInputAction: TextInputAction.next,
+                      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                     ),
                   ),
                 ],
@@ -625,7 +646,9 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
                       controller: _caloriesCtrl,
                       decoration: _inputDecor('Calories'),
                       keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       textInputAction: TextInputAction.done,
+                      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -749,13 +772,14 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
           ),
         ),
       ),
+      ),
     );
   }
 
   // ── Image picker widget ───────────────────────────────────────────
   Widget _buildImagePicker() {
     final hasLocal = _pickedImage != null;
-    final hasNetwork = _existingImageUrl.isNotEmpty;
+    final hasNetwork = _isValidImageUrl(_existingImageUrl);
     final showPreview = hasLocal || hasNetwork;
 
     return Center(
@@ -860,6 +884,17 @@ class _AddEditMenuScreenState extends State<AddEditMenuScreen> {
         ),
       ),
     );
+  }
+
+  /// Returns true only if [url] looks like a usable image path.
+  static bool _isValidImageUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return false;
+    // Django sometimes stores literal "None" or placeholder paths
+    if (trimmed == 'None' || trimmed == 'null' || trimmed == '/media/None') {
+      return false;
+    }
+    return true;
   }
 
   /// Prepend server origin for relative paths from the Django backend.

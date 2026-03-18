@@ -33,7 +33,7 @@ class ChatSession {
     this.messages = const [],
   });
 
-  bool get isActive => status == 'active';
+  bool get isActive => status == 'active' || status == 'escalated';
   bool get isEscalated => status == 'escalated';
   bool get isEnded =>
       status == 'resolved' ||
@@ -72,22 +72,27 @@ class ChatSession {
 
 class ChatMessage {
   final int id;
-  final String senderType; // user, bot, system
+  final String rawId; // Original UUID string from backend
+  final String senderType; // user, bot, system, agent
   final String messageType;
   final MessageContent content;
   final DateTime createdAt;
+  final String senderName;
 
   const ChatMessage({
     required this.id,
+    this.rawId = '',
     required this.senderType,
     required this.messageType,
     required this.content,
     required this.createdAt,
+    this.senderName = '',
   });
 
   bool get isUser => senderType == 'user';
   bool get isBot => senderType == 'bot';
-  bool get isSystem => senderType == 'system';
+  bool get isSystem => senderType == 'system' || messageType == 'agent_joined';
+  bool get isAgent => senderType == 'agent';
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final type = (json['message_type'] as String?) ?? 'text';
@@ -105,10 +110,12 @@ class ChatMessage {
 
     return ChatMessage(
       id: _safeInt(json['id']),
+      rawId: json['id']?.toString() ?? '',
       senderType: (json['sender_type'] as String?) ?? 'bot',
       messageType: type,
       content: MessageContent.parse(type, contentMap),
       createdAt: _parseDate(json['created_at']),
+      senderName: (json['sender_name'] as String?) ?? '',
     );
   }
 }
@@ -143,6 +150,8 @@ sealed class MessageContent {
         return EscalationNoticeContent.fromJson(json);
       case 'system_notice':
         return SystemNoticeContent.fromJson(json);
+      case 'agent_joined':
+        return AgentJoinedContent.fromJson(json);
       default:
         // Defensive fallback — unknown type rendered as plain text
         return TextContent(text: json['text']?.toString() ?? '');
@@ -373,6 +382,27 @@ class SystemNoticeContent extends MessageContent {
 
   factory SystemNoticeContent.fromJson(Map<String, dynamic> json) {
     return SystemNoticeContent(text: (json['text'] as String?) ?? '');
+  }
+}
+
+// ── Agent Joined ────────────────────────────────────────────────────────────
+
+class AgentJoinedContent extends MessageContent {
+  final String text;
+  final String agentName;
+  final String agentId;
+  const AgentJoinedContent({
+    required this.text,
+    required this.agentName,
+    this.agentId = '',
+  });
+
+  factory AgentJoinedContent.fromJson(Map<String, dynamic> json) {
+    return AgentJoinedContent(
+      text: (json['text'] as String?) ?? 'An agent has joined the chat.',
+      agentName: (json['agent_name'] as String?) ?? 'Support Agent',
+      agentId: (json['agent_id']?.toString()) ?? '',
+    );
   }
 }
 

@@ -416,6 +416,7 @@ class _AuthInterceptor extends Interceptor {
   }
 
   /// Clear storage and force-navigate to login — **once only**.
+  /// _isLoggingOut stays true until resetLoggingOut() is called after next login.
   Future<void> _clearAndLogout() async {
     if (_isLoggingOut) return;
     _isLoggingOut = true;
@@ -430,10 +431,8 @@ class _AuthInterceptor extends Interceptor {
       AppLogger.w('[Auth] Session expired — redirecting to login');
       nav.pushNamedAndRemoveUntil(AppRouter.login, (_) => false);
     }
-
-    Future.delayed(const Duration(seconds: 2), () {
-      _isLoggingOut = false;
-    });
+    // DON'T auto-reset _isLoggingOut — it stays true until next login
+    // calls resetLoggingOut() via AuthViewModel.logout/login
   }
 }
 

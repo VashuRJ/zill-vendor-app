@@ -141,6 +141,8 @@ class ApiEndpoints {
       '/support/chat/session/$sessionId/';
   static String chatSessionMessage(String sessionId) =>
       '/support/chat/session/$sessionId/message/';
+  static String chatSessionPoll(String sessionId) =>
+      '/support/chat/session/$sessionId/poll/';
   static String chatSessionRate(String sessionId) =>
       '/support/chat/session/$sessionId/rate/';
   static String chatSessionEnd(String sessionId) =>

@@ -30,6 +30,25 @@ class ProfileData {
   final bool hasBankAccount;
   final String? logoUrl;
   final String? imageUrl;
+  // Extra details from backend
+  final String cuisineTypes;
+  final int averagePrepTime; // minutes
+  final String openingTime;
+  final String closingTime;
+  // Restaurant type & features
+  final String restaurantType;
+  final double costForTwo;
+  final bool isPureVeg;
+  final bool servesAlcohol;
+  final bool hasDineIn;
+  final bool hasTakeaway;
+  final bool hasDelivery;
+  final int seatingCapacity;
+  final String website;
+  final bool autoAcceptOrders;
+  // Location coordinates
+  final double? latitude;
+  final double? longitude;
 
   const ProfileData({
     this.storeName = '',
@@ -50,6 +69,22 @@ class ProfileData {
     this.hasBankAccount = false,
     this.logoUrl,
     this.imageUrl,
+    this.cuisineTypes = '',
+    this.averagePrepTime = 0,
+    this.openingTime = '',
+    this.closingTime = '',
+    this.restaurantType = '',
+    this.costForTwo = 0,
+    this.isPureVeg = false,
+    this.servesAlcohol = false,
+    this.hasDineIn = false,
+    this.hasTakeaway = true,
+    this.hasDelivery = true,
+    this.seatingCapacity = 0,
+    this.website = '',
+    this.autoAcceptOrders = false,
+    this.latitude,
+    this.longitude,
   });
 
   factory ProfileData.fromJson(Map<String, dynamic> json) {
@@ -74,7 +109,29 @@ class ProfileData {
       // Backend serializer returns logo_url / image_url (not logo / image)
       logoUrl: json['logo_url'] as String?,
       imageUrl: json['image_url'] as String?,
+      cuisineTypes: _parseCuisineTypes(json['cuisine_types']),
+      averagePrepTime: (json['average_prep_time'] as num?)?.toInt() ?? 0,
+      openingTime: json['opening_time'] as String? ?? '',
+      closingTime: json['closing_time'] as String? ?? '',
+      restaurantType: json['restaurant_type'] as String? ?? '',
+      costForTwo: (json['cost_for_two'] as num?)?.toDouble() ?? 0,
+      isPureVeg: json['is_pure_veg'] as bool? ?? false,
+      servesAlcohol: json['serves_alcohol'] as bool? ?? false,
+      hasDineIn: json['has_dine_in'] as bool? ?? false,
+      hasTakeaway: json['has_takeaway'] as bool? ?? true,
+      hasDelivery: json['has_delivery'] as bool? ?? true,
+      seatingCapacity: (json['seating_capacity'] as num?)?.toInt() ?? 0,
+      website: json['website'] as String? ?? '',
+      autoAcceptOrders: json['auto_accept_orders'] as bool? ?? false,
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
     );
+  }
+
+  static String _parseCuisineTypes(dynamic raw) {
+    if (raw is String) return raw;
+    if (raw is List) return raw.map((e) => e.toString()).join(', ');
+    return '';
   }
 }
 
@@ -253,10 +310,27 @@ class ProfileViewModel extends ChangeNotifier {
   // ── Update profile  PUT /api/vendors/profile/ ───────────────────
   Future<bool> updateProfile({
     required String name,
+    String? ownerName,
     required String phone,
     required String email,
     required String address,
     String? description,
+    String? cuisineTypes,
+    int? averagePrepTime,
+    String? openingTime,
+    String? closingTime,
+    String? restaurantType,
+    double? costForTwo,
+    bool? isPureVeg,
+    bool? servesAlcohol,
+    bool? hasDineIn,
+    bool? hasTakeaway,
+    bool? hasDelivery,
+    int? seatingCapacity,
+    String? website,
+    bool? autoAcceptOrders,
+    double? latitude,
+    double? longitude,
   }) async {
     _status = ProfileStatus.loading;
     _errorMessage = null;
@@ -269,9 +343,44 @@ class ProfileViewModel extends ChangeNotifier {
         'email': email,
         'address': address,
       };
+      if (ownerName != null && ownerName.isNotEmpty) {
+        payload['owner_name'] = ownerName;
+      }
       if (description != null && description.isNotEmpty) {
         payload['description'] = description;
       }
+      if (cuisineTypes != null && cuisineTypes.isNotEmpty) {
+        payload['cuisine_types'] = cuisineTypes;
+      }
+      if (averagePrepTime != null && averagePrepTime > 0) {
+        payload['average_prep_time'] = averagePrepTime;
+      }
+      if (openingTime != null && openingTime.isNotEmpty) {
+        payload['opening_time'] = openingTime;
+      }
+      if (closingTime != null && closingTime.isNotEmpty) {
+        payload['closing_time'] = closingTime;
+      }
+      if (restaurantType != null && restaurantType.isNotEmpty) {
+        payload['restaurant_type'] = restaurantType;
+      }
+      if (costForTwo != null && costForTwo > 0) {
+        payload['cost_for_two'] = costForTwo;
+      }
+      if (isPureVeg != null) payload['is_pure_veg'] = isPureVeg;
+      if (servesAlcohol != null) payload['serves_alcohol'] = servesAlcohol;
+      if (hasDineIn != null) payload['has_dine_in'] = hasDineIn;
+      if (hasTakeaway != null) payload['has_takeaway'] = hasTakeaway;
+      if (hasDelivery != null) payload['has_delivery'] = hasDelivery;
+      if (seatingCapacity != null) {
+        payload['seating_capacity'] = seatingCapacity;
+      }
+      if (website != null) payload['website'] = website;
+      if (autoAcceptOrders != null) {
+        payload['auto_accept_orders'] = autoAcceptOrders;
+      }
+      if (latitude != null) payload['latitude'] = latitude;
+      if (longitude != null) payload['longitude'] = longitude;
 
       await _apiService.put(ApiEndpoints.profile, data: payload);
       // Re-fetch to get server-confirmed values

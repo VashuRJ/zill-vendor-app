@@ -15,7 +15,7 @@ import '../widgets/profile_header_card.dart';
 import '../widgets/section_header.dart';
 import 'bank_account_screen.dart';
 import 'change_password_screen.dart';
-import 'edit_profile_screen.dart';
+import 'view_profile_screen.dart';
 import 'operating_hours_screen.dart';
 import '../../earnings/view/earnings_screen.dart';
 import '../../reviews/view/reviews_screen.dart';
@@ -203,7 +203,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => const EditProfileScreen(),
+                        builder: (_) => const ViewProfileScreen(),
                       ),
                     ),
                     child: Container(
@@ -219,13 +219,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
-                            Icons.edit_rounded,
+                            Icons.visibility_outlined,
                             size: 13,
                             color: AppColors.primary,
                           ),
                           SizedBox(width: 4),
                           Text(
-                            'Edit',
+                            'View Profile',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,

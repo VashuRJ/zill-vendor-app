@@ -26,122 +26,121 @@ import 'features/support/viewmodel/support_viewmodel.dart';
 import 'features/delivery_zones/viewmodel/delivery_zone_viewmodel.dart';
 import 'features/addons/viewmodel/addon_viewmodel.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  runZonedGuarded(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
 
-  // Make ALL rendering errors visible (red card instead of blank white screen)
-  ErrorWidget.builder = (FlutterErrorDetails details) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFF0F0),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFFF5252)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
+      // Make ALL rendering errors visible (red card instead of blank white screen)
+      ErrorWidget.builder = (FlutterErrorDetails details) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          margin: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF0F0),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFFF5252)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.error_outline, color: Color(0xFFFF5252), size: 20),
-              SizedBox(width: 8),
+              const Row(
+                children: [
+                  Icon(Icons.error_outline, color: Color(0xFFFF5252), size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    'RENDER ERROR',
+                    style: TextStyle(
+                      color: Color(0xFFFF5252),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
               Text(
-                'RENDER ERROR',
-                style: TextStyle(
-                  color: Color(0xFFFF5252),
-                  fontWeight: FontWeight.w800,
-                  fontSize: 13,
-                ),
+                '${details.exception}',
+                style: const TextStyle(fontSize: 11, color: Color(0xFF880000)),
+                maxLines: 5,
+                overflow: TextOverflow.ellipsis,
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            '${details.exception}',
-            style: const TextStyle(fontSize: 11, color: Color(0xFF880000)),
-            maxLines: 5,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  };
+        );
+      };
 
-  // Use bundled Poppins fonts — no runtime network downloads (prevents ANR)
-  GoogleFonts.config.allowRuntimeFetching = false;
+      // Catch Flutter framework errors (layout, rendering, gestures)
+      FlutterError.onError = (FlutterErrorDetails details) {
+        AppLogger.e('[FlutterError] ${details.exception}', details.exception, details.stack);
+      };
 
-  // Initialize Firebase (skip if already init'd — hot restart safe)
-  final isFirstInit = Firebase.apps.isEmpty;
-  if (isFirstInit) {
-    await Firebase.initializeApp();
-  }
+      // Use bundled Poppins fonts — no runtime network downloads (prevents ANR)
+      GoogleFonts.config.allowRuntimeFetching = false;
 
-  // Register background handler only on cold start. On hot restart the native
-  // isolate is already running — re-registering triggers "duplicate background
-  // isolate" which blocks the UI thread for minutes (ANR).
-  if (isFirstInit) {
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-  }
+      // Initialize Firebase (skip if already init'd — hot restart safe)
+      final isFirstInit = Firebase.apps.isEmpty;
+      if (isFirstInit) {
+        await Firebase.initializeApp();
+      }
 
-  // Lock orientation to portrait
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
+      // Register background handler only on cold start. On hot restart the native
+      // isolate is already running — re-registering triggers "duplicate background
+      // isolate" which blocks the UI thread for minutes (ANR).
+      if (isFirstInit) {
+        FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+      }
 
-  // Set status bar style
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.dark,
-    ),
-  );
+      // Lock orientation to portrait
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+      ]);
 
-  // Initialize services
-  final storageService = StorageService();
-  final navigatorKey = GlobalKey<NavigatorState>();
-  final apiService = ApiService(
-    storageService: storageService,
-    navigatorKey: navigatorKey,
-  );
-  final pushService = PushNotificationService(
-    apiService: apiService,
-    storageService: storageService,
-  );
+      // Set status bar style
+      SystemChrome.setSystemUIOverlayStyle(
+        const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.dark,
+        ),
+      );
 
-  // Initialize the order alarm method channel bridge
-  OrderAlarmService.init();
-
-  // Wire up alarm listener — navigate to IncomingOrderScreen when alarm fires
-  OrderAlarmService.onAlarmOrderReceived = (data) {
-    navigatorKey.currentState?.pushNamed(
-      AppRouter.incomingOrder,
-      arguments: data,
-    );
-  };
-
-  // Check if app was cold-launched from an alarm notification
-  _checkAlarmLaunch(navigatorKey);
-
-  // ── Global error boundaries ──────────────────────────────────────────
-  // 1. Catch Flutter framework errors (layout, rendering, gestures)
-  FlutterError.onError = (FlutterErrorDetails details) {
-    AppLogger.e('[FlutterError] ${details.exception}', details.exception, details.stack);
-  };
-
-  // 2. Catch ALL unhandled async/isolate exceptions — prevents grey
-  //    screen of death in production.
-  runZonedGuarded(
-    () => runApp(
-      VendorApp(
+      // Initialize services
+      final storageService = StorageService();
+      final navigatorKey = GlobalKey<NavigatorState>();
+      final apiService = ApiService(
         storageService: storageService,
-        apiService: apiService,
-        pushService: pushService,
         navigatorKey: navigatorKey,
-      ),
-    ),
+      );
+      final pushService = PushNotificationService(
+        apiService: apiService,
+        storageService: storageService,
+      );
+
+      // Initialize the order alarm method channel bridge
+      OrderAlarmService.init();
+
+      // Wire up alarm listener — navigate to IncomingOrderScreen when alarm fires
+      OrderAlarmService.onAlarmOrderReceived = (data) {
+        navigatorKey.currentState?.pushNamed(
+          AppRouter.incomingOrder,
+          arguments: data,
+        );
+      };
+
+      // Check if app was cold-launched from an alarm notification
+      _checkAlarmLaunch(navigatorKey);
+
+      runApp(
+        VendorApp(
+          storageService: storageService,
+          apiService: apiService,
+          pushService: pushService,
+          navigatorKey: navigatorKey,
+        ),
+      );
+    },
     (Object error, StackTrace stack) {
       AppLogger.e('[Unhandled] $error', error, stack);
     },

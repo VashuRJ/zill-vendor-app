@@ -1,6 +1,8 @@
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../viewmodel/auth_viewmodel.dart';
@@ -102,8 +104,22 @@ class _SplashScreenState extends State<SplashScreen>
     if (!mounted) return;
     _textCtrl.forward();
 
-    // Check auth while animations play
+    // Request notification permission early — like Swiggy/Zomato do on first launch
+    // Both Firebase-level (iOS) and Android 13+ system permission
     await Future.delayed(const Duration(milliseconds: 800));
+    if (!mounted) return;
+    try {
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      await Permission.notification.request();
+    } catch (_) {
+      // User denied or error — non-fatal, app continues without push
+    }
+
+    // Check auth after permission dialog
     if (!mounted) return;
     await _checkAuth();
   }

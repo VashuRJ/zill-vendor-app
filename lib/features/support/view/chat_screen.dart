@@ -289,6 +289,7 @@ class _ChatScreenState extends State<ChatScreen> {
       RatingRequestContent() => _RatingBubble(content: content, onRate: _submitRating),
       EscalationNoticeContent() => _EscalationBubble(content: content),
       SystemNoticeContent() => _SystemNoticeBubble(content: content),
+      AgentJoinedContent() => _AgentJoinedBubble(content: content),
       FormContent() => _FormBubble(msg: msg, content: content),
     };
   }
@@ -407,6 +408,24 @@ class _TextBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = msg.isUser;
+    final isAgent = msg.isAgent;
+
+    // Agent: left side, blue tint
+    // Bot: left side, white
+    // User: right side, primary
+    final Color bubbleColor;
+    final Color textColor;
+    if (isUser) {
+      bubbleColor = AppColors.primary;
+      textColor = Colors.white;
+    } else if (isAgent) {
+      bubbleColor = AppColors.info.withAlpha(20);
+      textColor = AppColors.textPrimary;
+    } else {
+      bubbleColor = AppColors.surface;
+      textColor = AppColors.textPrimary;
+    }
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -417,13 +436,14 @@ class _TextBubble extends StatelessWidget {
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: isUser ? AppColors.primary : AppColors.surface,
+          color: bubbleColor,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
             bottomLeft: Radius.circular(isUser ? 16 : 4),
             bottomRight: Radius.circular(isUser ? 4 : 16),
           ),
+          border: isAgent ? Border.all(color: AppColors.info.withAlpha(40)) : null,
           boxShadow: [
             BoxShadow(
               color: Colors.black.withAlpha(8),
@@ -436,11 +456,30 @@ class _TextBubble extends StatelessWidget {
           crossAxisAlignment:
               isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
+            // Agent name header
+            if (isAgent && msg.senderName.isNotEmpty) ...[
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.support_agent_rounded, size: 13, color: AppColors.info),
+                  const SizedBox(width: 4),
+                  Text(
+                    msg.senderName,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.info,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
             Text(
               content.text,
               style: TextStyle(
                 fontSize: 14,
-                color: isUser ? Colors.white : AppColors.textPrimary,
+                color: textColor,
                 height: 1.4,
               ),
             ),
@@ -940,6 +979,47 @@ class _SystemNoticeBubble extends StatelessWidget {
             color: AppColors.textSecondary,
             fontStyle: FontStyle.italic,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Agent Joined Bubble (center-aligned system notice)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _AgentJoinedBubble extends StatelessWidget {
+  final AgentJoinedContent content;
+  const _AgentJoinedBubble({required this.content});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.info.withAlpha(20),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.info.withAlpha(40)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.support_agent_rounded, size: 16, color: AppColors.info),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                '${content.agentName} joined the chat',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.info,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

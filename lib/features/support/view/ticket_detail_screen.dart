@@ -57,13 +57,13 @@ class _TicketDetailScreenState extends State<TicketDetailScreen> {
   Future<void> _sendReply() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-    _controller.clear();
     FocusScope.of(context).unfocus();
 
     final vm = context.read<SupportViewModel>();
     final ok = await vm.replyToTicket(widget.ticketId, text);
     if (mounted) {
       if (ok) {
+        _controller.clear();
         _scrollToBottom();
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
