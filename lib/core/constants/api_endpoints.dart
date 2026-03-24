@@ -161,6 +161,9 @@ class ApiEndpoints {
   static const String cancelSubscription = '/vendors/subscription/cancel/';
   static const String payAdvance = '/vendors/subscription/pay-advance/';
 
+  // App Version / Force Update (public — no auth required)
+  static const String latestRelease = '/admin/latest-release/';
+
   // ── WebSocket ─────────────────────────────────────────────────────
   static const String wsBaseUrl = 'wss://zill.co.in';
   //    static const String wsBaseUrl = 'ws://localhost:8000';

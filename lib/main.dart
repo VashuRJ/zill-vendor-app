@@ -5,6 +5,7 @@
 import 'dart:async';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -76,11 +77,6 @@ void main() {
         );
       };
 
-      // Catch Flutter framework errors (layout, rendering, gestures)
-      FlutterError.onError = (FlutterErrorDetails details) {
-        AppLogger.e('[FlutterError] ${details.exception}', details.exception, details.stack);
-      };
-
       // Use bundled Poppins fonts — no runtime network downloads (prevents ANR)
       GoogleFonts.config.allowRuntimeFetching = false;
 
@@ -89,6 +85,14 @@ void main() {
       if (isFirstInit) {
         await Firebase.initializeApp();
       }
+
+      // Catch Flutter framework errors (layout, rendering, gestures).
+      // MUST be after Firebase.initializeApp() — Crashlytics.instance throws if
+      // Firebase is not yet initialized when the callback is first invoked.
+      FlutterError.onError = (FlutterErrorDetails details) {
+        AppLogger.e('[FlutterError] ${details.exception}', details.exception, details.stack);
+        FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+      };
 
       // Register background handler only on cold start. On hot restart the native
       // isolate is already running — re-registering triggers "duplicate background
@@ -151,6 +155,7 @@ void main() {
     },
     (Object error, StackTrace stack) {
       AppLogger.e('[Unhandled] $error', error, stack);
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
     },
   );
 }

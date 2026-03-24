@@ -1,3 +1,4 @@
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/services/update_service.dart';
+import '../../../shared/widgets/update_dialog.dart';
 import '../viewmodel/auth_viewmodel.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -126,6 +129,16 @@ class _SplashScreenState extends State<SplashScreen>
 
   Future<void> _checkAuth() async {
     if (_navigated) return;
+
+    // Check for app updates before auth — force updates block navigation.
+    final updateResult = await UpdateService.instance.checkForUpdate();
+    if (!mounted) return;
+    if (updateResult.hasUpdate) {
+      await showUpdateDialog(context, updateResult);
+      // If force update, showUpdateDialog never returns (user stays on overlay).
+      // If optional, user dismissed and we continue normally.
+      if (!mounted) return;
+    }
 
     final authVM = context.read<AuthViewModel>();
     await authVM.checkAuthStatus();

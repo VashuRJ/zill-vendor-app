@@ -5,6 +5,7 @@ plugins {
     id("com.android.application")
     id("kotlin-android")
     id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -53,6 +54,22 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            // R8 full-mode: shrinks, obfuscates, and optimises the Java/Kotlin
+            // bridge layer. Dart code is already compiled to native ARM binary
+            // so R8 never touches it — this affects only plugin Java classes.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                // Google's optimised baseline rules (enables -optimizations)
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                // Our app-specific keep rules for Razorpay, Firebase, etc.
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            // Explicitly OFF for debug — keeps stack traces readable.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 

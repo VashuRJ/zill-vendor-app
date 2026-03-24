@@ -31,6 +31,7 @@ class _AppShellState extends State<AppShell> {
   int _currentIndex = 0;
   final List<int> _tabHistory = [0];
   List<Widget>? _screens;
+  bool _isExitDialogShowing = false;
 
   void _switchTab(int index) {
     if (index >= 0 && index < (_screens?.length ?? 5)) {
@@ -117,7 +118,9 @@ class _AppShellState extends State<AppShell> {
           });
           return;
         }
-        // At root (Dashboard) — show exit confirmation
+        // At root (Dashboard) — show exit confirmation (guard against double-tap)
+        if (_isExitDialogShowing) return;
+        _isExitDialogShowing = true;
         showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -135,6 +138,7 @@ class _AppShellState extends State<AppShell> {
             ],
           ),
         ).then((exit) {
+          _isExitDialogShowing = false;
           if (exit == true) {
             SystemNavigator.pop();
           }
