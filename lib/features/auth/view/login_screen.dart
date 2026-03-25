@@ -307,43 +307,12 @@ class _LoginScreenState extends State<LoginScreen>
   Widget _buildHeader() {
     return Column(
       children: [
-        Container(
-          width: 56,
-          height: 56,
-          decoration: BoxDecoration(
-            color: _brand.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: const Icon(Icons.storefront_rounded, color: _brand, size: 28),
+        Image.asset(
+          'assets/logo/splash_logo_transparent.png',
+          width: 160,
+          fit: BoxFit.contain,
         ),
-        const SizedBox(height: 16),
-        RichText(
-          text: TextSpan(
-            children: [
-              TextSpan(
-                text: 'Zi',
-                style: GoogleFonts.poppins(
-                  fontSize: 42,
-                  fontWeight: FontWeight.w800,
-                  color: _ink,
-                  height: 1.0,
-                  letterSpacing: -1.0,
-                ),
-              ),
-              TextSpan(
-                text: 'll',
-                style: GoogleFonts.poppins(
-                  fontSize: 42,
-                  fontWeight: FontWeight.w800,
-                  color: _brand,
-                  height: 1.0,
-                  letterSpacing: -1.0,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         Text(
           'Restaurant Partner',
           style: GoogleFonts.poppins(

@@ -106,8 +106,9 @@ class HelpSupportScreen extends StatelessWidget {
               child: Column(
                 children: [
                   Image.asset(
-                    'assets/logo/source_icon.png',
-                    width: 48,
+                    'assets/logo/splash_logo_transparent.png',
+                    width: 110,
+                    fit: BoxFit.contain,
                   ),
                   const SizedBox(height: 8),
                   const Text(

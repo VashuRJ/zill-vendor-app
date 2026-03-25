@@ -332,7 +332,6 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
             label,
@@ -341,12 +340,18 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
               color: AppColors.textSecondary,
             ),
           ),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: AppSizes.fontMd,
-              fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-              color: AppColors.textPrimary,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: AppSizes.fontMd,
+                fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+                color: AppColors.textPrimary,
+              ),
+              textAlign: TextAlign.end,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

@@ -107,6 +107,9 @@ dependencies:
   # WebSocket (real-time order updates & notifications)
   web_socket_channel: ^3.0.1
 
+  # Native splash screen (keeps flower logo visible until Flutter is ready)
+  flutter_native_splash: ^2.4.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -125,15 +128,24 @@ dev_dependencies:
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
+flutter_native_splash:
+  color: "#ffffff"
+  image: assets/logo/splash_logo.png
+  android_12:
+    color: "#ffffff"
+    icon_background_color: "#ffffff"
+  android: true
+  ios: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ZILL RESTAURANT PARTNER — Launcher Icon Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 flutter_launcher_icons:
-  image_path: "assets/logo/source_icon.png"
+  image_path: "assets/logo/source_icon_zoomed.png"
   android: true
   min_sdk_android: 21
-  adaptive_icon_background: "#FF6B35"
-  adaptive_icon_foreground: "assets/logo/source_icon.png"
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/logo/source_icon_zoomed.png"
   ios: true
   remove_alpha_ios: true
 

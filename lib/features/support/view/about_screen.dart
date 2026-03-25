@@ -38,20 +38,10 @@ class AboutScreen extends StatelessWidget {
             const SizedBox(height: 20),
 
             // ── Logo + Brand ─────────────────────────────────────
-            Container(
-              width: 90,
-              height: 90,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withAlpha(20),
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(22),
-                child: Image.asset(
-                  'assets/logo/source_icon.png',
-                  width: 90,
-                ),
-              ),
+            Image.asset(
+              'assets/logo/splash_logo_transparent.png',
+              width: 160,
+              fit: BoxFit.contain,
             ),
             const SizedBox(height: 16),
             const Text(

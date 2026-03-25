@@ -501,11 +501,14 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
                           color: Colors.white.withValues(alpha: 0.7),
                         ),
                         const SizedBox(width: 4),
-                        Text(
-                          '${vm.data.todayOpenTime} – ${vm.data.todayCloseTime}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Colors.white.withValues(alpha: 0.7),
-                              ),
+                        Flexible(
+                          child: Text(
+                            '${vm.data.todayOpenTime} – ${vm.data.todayCloseTime}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ],
                     ),
@@ -726,21 +729,15 @@ class _LiveOrderCard extends StatelessWidget {
                 children: [
                   Icon(_statusIcon(order.status), size: 16, color: statusColor),
                   const SizedBox(width: 6),
-                  Text(
-                    'ID: ${order.id}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: statusColor,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    order.orderNumber,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: statusColor.withValues(alpha: 0.7),
+                  Flexible(
+                    child: Text(
+                      'ID: ${order.id}  ${order.orderNumber}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: statusColor,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const Spacer(),
@@ -1234,10 +1231,11 @@ class _ActionBtn extends StatelessWidget {
       return OutlinedButton.icon(
         onPressed: onTap,
         icon: Icon(icon, size: 16),
-        label: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        label: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
         style: OutlinedButton.styleFrom(
           foregroundColor: color,
           side: BorderSide(color: color),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),

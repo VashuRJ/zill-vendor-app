@@ -12,6 +12,8 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
+import 'package:flutter_native_splash/flutter_native_splash.dart';
+
 import 'core/constants/app_strings.dart';
 import 'core/routing/app_router.dart';
 import 'core/services/api_service.dart';
@@ -35,7 +37,8 @@ import 'features/addons/viewmodel/addon_viewmodel.dart';
 void main() {
   runZonedGuarded(
     () async {
-      WidgetsFlutterBinding.ensureInitialized();
+      final binding = WidgetsFlutterBinding.ensureInitialized();
+      FlutterNativeSplash.preserve(widgetsBinding: binding);
 
       // Make ALL rendering errors visible (red card instead of blank white screen)
       ErrorWidget.builder = (FlutterErrorDetails details) {
@@ -253,6 +256,16 @@ class VendorApp extends StatelessWidget {
         navigatorKey: navigatorKey,
         initialRoute: AppRouter.splash,
         onGenerateRoute: AppRouter.generateRoute,
+        // Lock text scale to 1.0 — prevents system font size (accessibility)
+        // from breaking fixed-height buttons, cards, and rows on any device.
+        builder: (context, child) {
+          return MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.noScaling,
+            ),
+            child: child!,
+          );
+        },
       ),
     );
   }

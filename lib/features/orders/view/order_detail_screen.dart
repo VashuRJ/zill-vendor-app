@@ -701,7 +701,12 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
                 children: [
                   const Icon(Icons.copy, color: Colors.white, size: 16),
                   const SizedBox(width: 8),
-                  Text('Order ID copied: ${_order.orderNumber}'),
+                  Expanded(
+                    child: Text(
+                      'Order ID copied: ${_order.orderNumber}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ],
               ),
               behavior: SnackBarBehavior.floating,

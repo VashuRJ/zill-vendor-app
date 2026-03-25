@@ -399,14 +399,19 @@ class _TransactionCard extends StatelessWidget {
                     color: _iconColor,
                   ),
                 ),
-                const Spacer(),
-                Text(
-                  txn.referenceId,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textSecondary,
-                    fontFamily: 'monospace',
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    txn.referenceId,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.textSecondary,
+                      fontFamily: 'monospace',
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.end,
                   ),
                 ),
               ],

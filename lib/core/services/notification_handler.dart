@@ -65,7 +65,7 @@ class VendorNotificationPayload {
       type: type,
       title: data['title'] as String? ?? _defaultTitle(type),
       body: data['body'] as String? ?? '',
-      orderId: (data['order_id'] as num?)?.toInt(),
+      orderId: data['order_id'] == null ? null : int.tryParse(data['order_id'].toString()),
       orderNumber: data['order_number'] as String?,
       scheduledFor: scheduled,
     );

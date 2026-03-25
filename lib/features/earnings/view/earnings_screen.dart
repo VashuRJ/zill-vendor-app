@@ -665,6 +665,8 @@ class _StatCardColored extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                     color: AppColors.textPrimary,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
