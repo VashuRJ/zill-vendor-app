@@ -79,7 +79,7 @@ class UpdateService {
         ApiEndpoints.latestRelease,
         queryParameters: {
           'app_type': 'vendor',
-          'current_build': localBuild,  // stripped ABI prefix
+          'current_build': localBuild,
         },
       );
 

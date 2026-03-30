@@ -78,11 +78,23 @@ enum PayoutRequestStatus { idle, requesting, success, error }
 
 class BankTabViewModel extends ChangeNotifier {
   final ApiService _apiService;
+  bool _isDisposed = false;
 
   BankTabViewModel({required ApiService apiService}) : _apiService = apiService;
 
   /// Expose the API service for child navigations (e.g. TransactionsScreen).
   ApiService get apiService => _apiService;
+
+  /// Safe notifyListeners — skips if already disposed.
+  void _notify() {
+    if (!_isDisposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    super.dispose();
+  }
 
   // ── Earnings state ──────────────────────────────────────────────────
   BankTabStatus _status = BankTabStatus.fetching;
@@ -194,7 +206,7 @@ class BankTabViewModel extends ChangeNotifier {
   void setFilter(String filter, {DateTimeRange? customRange}) {
     _selectedFilter = filter;
     _customDateRange = filter == 'Custom' ? customRange : null;
-    notifyListeners();
+    _notify();
   }
 
   /// Returns the date range implied by the current filter.
@@ -254,7 +266,7 @@ class BankTabViewModel extends ChangeNotifier {
     _settlements = [];
     _currentPage = 1;
     _hasMore = true;
-    notifyListeners();
+    _notify();
 
     final results = await Future.wait<dynamic>([
       _apiService
@@ -408,7 +420,7 @@ class BankTabViewModel extends ChangeNotifier {
     final allFailed =
         _earningsError != null && _bankError != null && _payoutsError != null;
     _status = allFailed ? BankTabStatus.error : BankTabStatus.idle;
-    notifyListeners();
+    _notify();
   }
 
   // ── Register / Update bank ──────────────────────────────────────────
@@ -421,7 +433,7 @@ class BankTabViewModel extends ChangeNotifier {
   }) async {
     _bankSaving = true;
     _bankSaveError = null;
-    notifyListeners();
+    _notify();
 
     try {
       final payload = <String, dynamic>{
@@ -447,18 +459,18 @@ class BankTabViewModel extends ChangeNotifier {
       }
 
       _bankSaving = false;
-      notifyListeners();
+      _notify();
       return true;
     } on DioException catch (e) {
       _bankSaveError = _parseDioError(e);
       _bankSaving = false;
-      notifyListeners();
+      _notify();
       return false;
     } catch (e) {
       _bankSaveError = 'An unexpected error occurred. Please try again.';
       _bankSaving = false;
       debugPrint('[BankTab] registerBank: $e');
-      notifyListeners();
+      _notify();
       return false;
     }
   }
@@ -467,7 +479,7 @@ class BankTabViewModel extends ChangeNotifier {
   Future<bool> requestPayout(double amount) async {
     _payoutReqStatus = PayoutRequestStatus.requesting;
     _payoutReqError = null;
-    notifyListeners();
+    _notify();
 
     try {
       await _apiService.post(
@@ -475,7 +487,7 @@ class BankTabViewModel extends ChangeNotifier {
         data: {'amount': amount},
       );
       _payoutReqStatus = PayoutRequestStatus.success;
-      notifyListeners();
+      _notify();
 
       // Refresh earnings (balance changed) and payouts list silently.
       await Future.wait([_refreshEarnings(), _refreshPayouts()]);
@@ -483,13 +495,13 @@ class BankTabViewModel extends ChangeNotifier {
     } on DioException catch (e) {
       _payoutReqError = _parseDioError(e);
       _payoutReqStatus = PayoutRequestStatus.error;
-      notifyListeners();
+      _notify();
       return false;
     } catch (e) {
       _payoutReqError = 'Failed to request payout. Please try again.';
       _payoutReqStatus = PayoutRequestStatus.error;
       debugPrint('[BankTab] requestPayout: $e');
-      notifyListeners();
+      _notify();
       return false;
     }
   }
@@ -497,14 +509,14 @@ class BankTabViewModel extends ChangeNotifier {
   void clearPayoutReqStatus() {
     _payoutReqStatus = PayoutRequestStatus.idle;
     _payoutReqError = null;
-    notifyListeners();
+    _notify();
   }
 
   // ── Load more settlements (pagination) ──────────────────────────────
   Future<void> loadMoreSettlements() async {
     if (_isLoadingMore || !_hasMore) return;
     _isLoadingMore = true;
-    notifyListeners();
+    _notify();
 
     try {
       _currentPage++;
@@ -525,7 +537,7 @@ class BankTabViewModel extends ChangeNotifier {
     }
 
     _isLoadingMore = false;
-    notifyListeners();
+    _notify();
   }
 
   // ── Refresh ────────────────────────────────────────────────────────
@@ -537,7 +549,7 @@ class BankTabViewModel extends ChangeNotifier {
       final resp = await _apiService.get(ApiEndpoints.vendorEarnings);
       final body = resp.data as Map<String, dynamic>;
       _summary = EarningsSummary.fromJson(body);
-      notifyListeners();
+      _notify();
     } catch (_) {}
   }
 
@@ -557,7 +569,7 @@ class BankTabViewModel extends ChangeNotifier {
             .toList();
         _totalPayouts = _payouts.length;
       }
-      notifyListeners();
+      _notify();
     } catch (_) {}
   }
 

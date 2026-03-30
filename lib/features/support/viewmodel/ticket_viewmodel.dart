@@ -104,9 +104,20 @@ enum TicketsStatus { idle, fetching, error }
 
 class TicketViewModel extends ChangeNotifier {
   final ApiService _apiService;
+  bool _isDisposed = false;
 
   TicketViewModel({required ApiService apiService})
       : _apiService = apiService;
+
+  void _notify() {
+    if (!_isDisposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    super.dispose();
+  }
 
   // ── State ────────────────────────────────────────────────────────────────
   TicketsStatus _status = TicketsStatus.idle;
@@ -131,7 +142,7 @@ class TicketViewModel extends ChangeNotifier {
   Future<void> fetchTickets() async {
     _status = TicketsStatus.fetching;
     _errorMessage = null;
-    notifyListeners();
+    _notify();
 
     try {
       final resp = await _apiService.get(ApiEndpoints.supportTickets);
@@ -161,7 +172,7 @@ class TicketViewModel extends ChangeNotifier {
       _status = TicketsStatus.error;
       debugPrint('[TicketVM] fetchTickets: $e');
     }
-    notifyListeners();
+    _notify();
   }
 
   // ── Create ───────────────────────────────────────────────────────────────
@@ -171,31 +182,41 @@ class TicketViewModel extends ChangeNotifier {
     required String category,
   }) async {
     _isBusy = true;
-    notifyListeners();
+    _errorMessage = null;
+    _notify();
 
     final data = <String, dynamic>{
       'subject': subject,
       'description': description,
       'category': category,
       'priority': 'medium',
+      'source_channel': 'app',
     };
 
+    debugPrint('[TicketVM] Creating ticket: $data');
+
     try {
-      await _apiService.post(ApiEndpoints.supportTicketCreate, data: data);
+      final resp = await _apiService.post(
+        ApiEndpoints.supportTicketCreate,
+        data: data,
+      );
+      debugPrint('[TicketVM] Ticket created: ${resp.statusCode}');
       await fetchTickets();
       _isBusy = false;
-      notifyListeners();
+      _notify();
       return true;
     } on DioException catch (e) {
+      debugPrint('[TicketVM] DioError: ${e.type} — ${e.message}');
+      debugPrint('[TicketVM] Response: ${e.response?.statusCode} ${e.response?.data}');
       _errorMessage = _parseDioError(e);
       _isBusy = false;
-      notifyListeners();
+      _notify();
       return false;
     } catch (e) {
-      _errorMessage = 'Failed to create ticket.';
+      debugPrint('[TicketVM] Unexpected: $e');
+      _errorMessage = 'Failed to create ticket. Please try again.';
       _isBusy = false;
-      notifyListeners();
-      debugPrint('[TicketVM] createTicket: $e');
+      _notify();
       return false;
     }
   }
