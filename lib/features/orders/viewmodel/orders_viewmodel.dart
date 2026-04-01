@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show DateTimeRange;
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/utils/app_logger.dart';
@@ -309,6 +310,15 @@ class OrdersViewModel extends ChangeNotifier {
   static const _autoRefreshInterval = Duration(seconds: 20);
   Timer? _autoRefreshTimer;
 
+  // ── Search & filter state ─────────────────────────────────────────
+  String _searchQuery = '';
+  DateTimeRange? _dateFilter;
+  List<VendorOrder> _searchResults = [];
+  bool _isSearching = false;
+  bool _searchHasMore = false;
+  int _searchPage = 1;
+  bool _searchLoading = false;
+
   // Getters
   OrdersStatus get status => _status;
   String? get error => _error;
@@ -320,6 +330,14 @@ class OrdersViewModel extends ChangeNotifier {
   int get completedLimit => _completedLimit;
   int get cancelledLimit => _cancelledLimit;
   bool isActionLoading(int id) => _actionLoading.contains(id);
+
+  // Search getters
+  String get searchQuery => _searchQuery;
+  DateTimeRange? get dateFilter => _dateFilter;
+  List<VendorOrder> get searchResults => _searchResults;
+  bool get isSearchActive => _isSearching;
+  bool get searchHasMore => _searchHasMore;
+  bool get searchLoading => _searchLoading;
 
   /// Search all order lists for a specific order by ID.
   VendorOrder? findOrderById(int id) {
@@ -344,6 +362,96 @@ class OrdersViewModel extends ChangeNotifier {
 
   void loadMoreCancelled() {
     _cancelledLimit += _pageSize;
+    notifyListeners();
+  }
+
+  // ── Search & Filter ────────────────────────────────────────────────
+
+  void setSearchQuery(String query) {
+    _searchQuery = query.trim();
+    if (_searchQuery.isEmpty && _dateFilter == null) {
+      _isSearching = false;
+      _searchResults = [];
+      notifyListeners();
+      return;
+    }
+    _isSearching = true;
+    _searchPage = 1;
+    _searchResults = [];
+    notifyListeners();
+    _executeSearch();
+  }
+
+  void setDateFilter(DateTimeRange? range) {
+    _dateFilter = range;
+    if (_searchQuery.isEmpty && range == null) {
+      _isSearching = false;
+      _searchResults = [];
+      notifyListeners();
+      return;
+    }
+    _isSearching = true;
+    _searchPage = 1;
+    _searchResults = [];
+    notifyListeners();
+    _executeSearch();
+  }
+
+  void clearSearch() {
+    _searchQuery = '';
+    _dateFilter = null;
+    _isSearching = false;
+    _searchResults = [];
+    _searchPage = 1;
+    _searchHasMore = false;
+    notifyListeners();
+  }
+
+  void loadMoreSearchResults() {
+    if (_searchLoading || !_searchHasMore) return;
+    _searchPage++;
+    _executeSearch(append: true);
+  }
+
+  Future<void> _executeSearch({bool append = false}) async {
+    _searchLoading = true;
+    if (!append) notifyListeners();
+
+    try {
+      final params = <String, dynamic>{
+        'page': _searchPage,
+        'per_page': 20,
+      };
+      if (_searchQuery.isNotEmpty) params['search'] = _searchQuery;
+      if (_dateFilter != null) {
+        params['date_from'] = _dateFilter!.start.toIso8601String().split('T').first;
+        params['date_to'] = _dateFilter!.end.toIso8601String().split('T').first;
+      }
+
+      final response = await _api.get(
+        ApiEndpoints.vendorOrders,
+        queryParameters: params,
+      );
+
+      final data = response.data as Map<String, dynamic>;
+      final list = (data['orders'] as List<dynamic>? ?? [])
+          .map((e) => VendorOrder.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+      if (append) {
+        _searchResults = [..._searchResults, ...list];
+      } else {
+        _searchResults = list;
+      }
+      _searchHasMore = data['has_more'] as bool? ?? false;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) return;
+      AppLogger.e('[Orders] search failed: ${e.message}');
+    } catch (e) {
+      AppLogger.e('[Orders] search unexpected: $e');
+    }
+
+    _searchLoading = false;
     notifyListeners();
   }
 

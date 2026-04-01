@@ -2,6 +2,7 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -34,26 +35,70 @@ class _OrdersScreenState extends State<OrdersScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tab;
   late final OrdersViewModel _ordersVM;
+  final _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  bool _showSearch = false;
 
   @override
   void initState() {
     super.initState();
     _tab = TabController(length: 5, vsync: this);
     _ordersVM = context.read<OrdersViewModel>();
+    _tab.addListener(_onTabChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ordersVM.fetchOrders();
       _ordersVM.startAutoRefresh();
     });
   }
 
+  void _onTabChanged() {
+    // Show search only on Completed (3) and Cancelled (4) tabs
+    final shouldShow = _tab.index == 3 || _tab.index == 4;
+    if (shouldShow != _showSearch) {
+      setState(() => _showSearch = shouldShow);
+      if (!shouldShow) {
+        _searchCtrl.clear();
+        _ordersVM.clearSearch();
+      }
+    }
+  }
+
   @override
   void dispose() {
     _ordersVM.stopAutoRefresh();
+    _tab.removeListener(_onTabChanged);
     _tab.dispose();
+    _searchCtrl.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
   Future<void> _refresh() => context.read<OrdersViewModel>().fetchOrders();
+
+  Future<void> _pickDateRange(OrdersViewModel vm) async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: now.subtract(const Duration(days: 365)),
+      lastDate: now,
+      initialDateRange: vm.dateFilter ??
+          DateTimeRange(
+            start: now.subtract(const Duration(days: 30)),
+            end: now,
+          ),
+      builder: (ctx, child) => Theme(
+        data: Theme.of(ctx).copyWith(
+          colorScheme: const ColorScheme.light(
+            primary: AppColors.primary,
+            onPrimary: Colors.white,
+            onSurface: AppColors.textPrimary,
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) vm.setDateFilter(picked);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -82,9 +127,9 @@ class _OrdersScreenState extends State<OrdersScreen>
                 tabs: [
                   _TabWithBadge(label: 'New', count: vm.newOrders.length),
                   _TabWithBadge(label: 'Preparing', count: vm.preparingOrders.length),
-                  _TabWithBadge(label: 'Ready', count: vm.readyOrders.length),
-                  _TabWithBadge(label: 'Completed', count: vm.completedOrders.length),
-                  _TabWithBadge(label: 'Cancelled', count: vm.cancelledOrders.length),
+                  _TabWithBadge(label: 'Ready', count: vm.readyOrders.length, showRedBadge: false),
+                  _TabWithBadge(label: 'Completed', count: vm.completedOrders.length, showRedBadge: false),
+                  _TabWithBadge(label: 'Cancelled', count: vm.cancelledOrders.length, showRedBadge: false),
                 ],
               );
             },
@@ -143,35 +188,331 @@ class _OrdersScreenState extends State<OrdersScreen>
             );
           }
 
-          return TabBarView(
-            controller: _tab,
+          return Column(
             children: [
-              _OrderTabBody(
-                orders: vm.newOrders,
-                tabType: _TabType.newOrder,
-                onRefresh: _refresh,
-              ),
-              _OrderTabBody(
-                orders: vm.preparingOrders,
-                tabType: _TabType.preparing,
-                onRefresh: _refresh,
-              ),
-              _OrderTabBody(
-                orders: vm.readyOrders,
-                tabType: _TabType.ready,
-                onRefresh: _refresh,
-              ),
-              _OrderTabBody(
-                orders: vm.completedOrders,
-                tabType: _TabType.completed,
-                onRefresh: _refresh,
-              ),
-              _OrderTabBody(
-                orders: vm.cancelledOrders,
-                tabType: _TabType.cancelled,
-                onRefresh: _refresh,
+              // ── Search bar (Completed/Cancelled tabs only) ──
+              if (_showSearch)
+                _OrderSearchBar(
+                  controller: _searchCtrl,
+                  dateFilter: vm.dateFilter,
+                  onChanged: (q) {
+                    _debounce?.cancel();
+                    _debounce = Timer(const Duration(milliseconds: 400), () {
+                      vm.setSearchQuery(q);
+                    });
+                  },
+                  onClear: () {
+                    _searchCtrl.clear();
+                    vm.clearSearch();
+                  },
+                  onDatePick: () => _pickDateRange(vm),
+                  onDateClear: () => vm.setDateFilter(null),
+                ),
+              // ── Content ──
+              Expanded(
+                child: vm.isSearchActive
+                    ? _SearchResultsBody(vm: vm)
+                    : TabBarView(
+                        controller: _tab,
+                        children: [
+                          _OrderTabBody(
+                            orders: vm.newOrders,
+                            tabType: _TabType.newOrder,
+                            onRefresh: _refresh,
+                          ),
+                          _OrderTabBody(
+                            orders: vm.preparingOrders,
+                            tabType: _TabType.preparing,
+                            onRefresh: _refresh,
+                          ),
+                          _OrderTabBody(
+                            orders: vm.readyOrders,
+                            tabType: _TabType.ready,
+                            onRefresh: _refresh,
+                          ),
+                          _OrderTabBody(
+                            orders: vm.completedOrders,
+                            tabType: _TabType.completed,
+                            onRefresh: _refresh,
+                          ),
+                          _OrderTabBody(
+                            orders: vm.cancelledOrders,
+                            tabType: _TabType.cancelled,
+                            onRefresh: _refresh,
+                          ),
+                        ],
+                      ),
               ),
             ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  Search Bar
+// ────────────────────────────────────────────────────────────────────
+class _OrderSearchBar extends StatelessWidget {
+  final TextEditingController controller;
+  final DateTimeRange? dateFilter;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+  final VoidCallback onDatePick;
+  final VoidCallback onDateClear;
+
+  const _OrderSearchBar({
+    required this.controller,
+    required this.dateFilter,
+    required this.onChanged,
+    required this.onClear,
+    required this.onDatePick,
+    required this.onDateClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppColors.surface,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              // Search field
+              Expanded(
+                child: SizedBox(
+                  height: 40,
+                  child: TextField(
+                    controller: controller,
+                    onChanged: onChanged,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: 'Search order ID, customer...',
+                      hintStyle: const TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textHint,
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.search_rounded,
+                        size: 20,
+                        color: AppColors.textHint,
+                      ),
+                      suffixIcon: controller.text.isNotEmpty
+                          ? GestureDetector(
+                              onTap: onClear,
+                              child: const Icon(
+                                Icons.close_rounded,
+                                size: 18,
+                                color: AppColors.textHint,
+                              ),
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: AppColors.background,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Date filter button
+              GestureDetector(
+                onTap: onDatePick,
+                child: Container(
+                  height: 40,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: dateFilter != null
+                        ? AppColors.primary.withAlpha(15)
+                        : AppColors.background,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: dateFilter != null
+                          ? AppColors.primary.withAlpha(80)
+                          : Colors.transparent,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.date_range_rounded,
+                    size: 20,
+                    color: dateFilter != null
+                        ? AppColors.primary
+                        : AppColors.textHint,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          // Date filter chip
+          if (dateFilter != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withAlpha(15),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: AppColors.primary.withAlpha(60),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.calendar_today_rounded,
+                          size: 12,
+                          color: AppColors.primary,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          '${_fmtDate(dateFilter!.start)} — ${_fmtDate(dateFilter!.end)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: onDateClear,
+                          child: const Icon(
+                            Icons.close_rounded,
+                            size: 14,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtDate(DateTime d) {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    return '${d.day} ${months[d.month - 1]}';
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  Search Results Body
+// ────────────────────────────────────────────────────────────────────
+class _SearchResultsBody extends StatelessWidget {
+  final OrdersViewModel vm;
+  const _SearchResultsBody({required this.vm});
+
+  static _TabType _tabTypeFromStatus(String status) {
+    switch (status) {
+      case 'pending':
+      case 'confirmed':
+        return _TabType.newOrder;
+      case 'preparing':
+        return _TabType.preparing;
+      case 'ready':
+      case 'picked':
+      case 'on_the_way':
+        return _TabType.ready;
+      case 'cancelled':
+        return _TabType.cancelled;
+      default:
+        return _TabType.completed;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (vm.searchLoading && vm.searchResults.isEmpty) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
+    }
+
+    if (vm.searchResults.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.search_off_rounded,
+              size: 52,
+              color: AppColors.textHint.withAlpha(80),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'No orders found',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textHint,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Try a different search or date range',
+              style: TextStyle(
+                fontSize: 13,
+                color: AppColors.textHint.withAlpha(160),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (scroll) {
+        if (scroll.metrics.pixels >= scroll.metrics.maxScrollExtent - 200 &&
+            vm.searchHasMore &&
+            !vm.searchLoading) {
+          vm.loadMoreSearchResults();
+        }
+        return false;
+      },
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        itemCount: vm.searchResults.length + (vm.searchHasMore ? 1 : 0),
+        itemBuilder: (ctx, i) {
+          if (i == vm.searchResults.length) {
+            return const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+            );
+          }
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _OrderCard(
+              order: vm.searchResults[i],
+              tabType: _SearchResultsBody._tabTypeFromStatus(vm.searchResults[i].status),
+            ),
           );
         },
       ),
@@ -183,10 +524,15 @@ class _OrdersScreenState extends State<OrdersScreen>
 //  Tab with count badge
 // ────────────────────────────────────────────────────────────────────
 class _TabWithBadge extends StatelessWidget {
-  const _TabWithBadge({required this.label, required this.count});
+  const _TabWithBadge({
+    required this.label,
+    required this.count,
+    this.showRedBadge = true,
+  });
 
   final String label;
   final int count;
+  final bool showRedBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -196,22 +542,32 @@ class _TabWithBadge extends StatelessWidget {
         children: [
           Text(label),
           if (count > 0) ...[
-            const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                '$count',
+            const SizedBox(width: 4),
+            if (showRedBadge)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              )
+            else
+              Text(
+                '($count)',
                 style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.textHint,
                 ),
               ),
-            ),
           ],
         ],
       ),
@@ -384,9 +740,16 @@ class _OrderCard extends StatelessWidget {
   bool get _hasActions =>
       tabType == _TabType.newOrder || tabType == _TabType.preparing;
 
+  /// Format price: ₹30 for whole numbers, ₹59.85 for decimals
+  static String _fmtPrice(double amount) {
+    if (amount == amount.truncateToDouble()) {
+      return '₹${amount.toInt()}';
+    }
+    return '₹${amount.toStringAsFixed(2)}';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final currFmt = NumberFormat.currency(symbol: '₹', decimalDigits: 2);
 
     // Build item list for display
     final displayItems = order.items.isNotEmpty
@@ -475,23 +838,39 @@ class _OrderCard extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // ── Top row: order number + status + time ──
+                            // ── Top row: ID + order number + time + status ──
                             Row(
                               crossAxisAlignment: CrossAxisAlignment.center,
                               children: [
+                                // Short ID (prominent, like Dashboard)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: _accentColor().withAlpha(18),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: Text(
+                                    'ID: ${order.id}',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 11,
+                                      color: _accentColor(),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
                                     order.orderNumber,
                                     style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 14,
-                                      color: AppColors.textPrimary,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                      color: AppColors.textHint,
                                       letterSpacing: 0.2,
                                     ),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                const SizedBox(width: 8),
                                 Text(
                                   _timeAgo(order.createdAt),
                                   style: const TextStyle(
@@ -503,12 +882,12 @@ class _OrderCard extends StatelessWidget {
                                 _StatusChip(status: order.status),
                               ],
                             ),
-                            const SizedBox(height: 5),
-                            // ── Type badge + customer ──
+                            const SizedBox(height: 6),
+                            // ── Type badge + customer + COD badge + call ──
                             Row(
                               children: [
                                 _OrderTypeBadge(orderType: order.orderType),
-                                const SizedBox(width: 8),
+                                const SizedBox(width: 6),
                                 const Icon(
                                   Icons.person_outline,
                                   size: 13,
@@ -525,6 +904,28 @@ class _OrderCard extends StatelessWidget {
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
+                                // Payment badge (next to name, like Dashboard)
+                                _PaymentMethodBadge(method: order.paymentMethod),
+                                // Call button
+                                if (order.customerPhone.isNotEmpty)
+                                  GestureDetector(
+                                    onTap: () => launchUrl(
+                                      Uri.parse('tel:${order.customerPhone}'),
+                                    ),
+                                    child: Container(
+                                      margin: const EdgeInsets.only(left: 6),
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.success.withAlpha(15),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Icon(
+                                        Icons.call_rounded,
+                                        size: 16,
+                                        color: AppColors.success,
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                             const SizedBox(height: 10),
@@ -578,7 +979,7 @@ class _OrderCard extends StatelessWidget {
                                                       ),
                                                     ),
                                                     Text(
-                                                      currFmt.format(
+                                                      _fmtPrice(
                                                         item.subtotal,
                                                       ),
                                                       style: const TextStyle(
@@ -654,15 +1055,19 @@ class _OrderCard extends StatelessWidget {
                                     ),
                             ),
                             const SizedBox(height: 10),
-                            // ── Bottom row: payment + total + chevron ──
+                            // ── Bottom row: items count + total + chevron ──
                             Row(
                               children: [
-                                _PaymentMethodBadge(
-                                  method: order.paymentMethod,
+                                Text(
+                                  '${order.itemsCount} item${order.itemsCount == 1 ? '' : 's'}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textHint,
+                                  ),
                                 ),
                                 const Spacer(),
                                 Text(
-                                  currFmt.format(order.totalAmount),
+                                  'Total: ${_fmtPrice(order.totalAmount)}',
                                   style: const TextStyle(
                                     fontWeight: FontWeight.w800,
                                     fontSize: 17,

@@ -104,8 +104,17 @@ class WebSocketService {
       return;
     }
 
-    final uri = Uri.parse('${ApiEndpoints.wsBaseUrl}$path?token=$token');
-    AppLogger.i('[WS] Connecting $key → $path (token=***)');
+    // Build URI manually to preserve wss:// scheme correctly.
+    // Uri.parse('wss://...') can mangle scheme/port on some platforms.
+    final base = Uri.parse(ApiEndpoints.wsBaseUrl);
+    final uri = Uri(
+      scheme: base.scheme.isNotEmpty ? base.scheme : 'wss',
+      host: base.host,
+      port: base.hasPort ? base.port : null,
+      path: path,
+      queryParameters: {'token': token},
+    );
+    AppLogger.i('[WS] Connecting $key → $uri');
 
     try {
       final channel = WebSocketChannel.connect(uri);
