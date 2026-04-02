@@ -5,7 +5,9 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/services/push_notification_service.dart';
+import '../../../core/services/update_service.dart';
 import '../../../core/services/websocket_service.dart';
+import '../../../shared/widgets/update_dialog.dart';
 import '../../dashboard/viewmodel/dashboard_viewmodel.dart';
 import '../../dashboard/view/dashboard_screen.dart';
 import '../../orders/viewmodel/orders_viewmodel.dart';
@@ -27,11 +29,13 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
   final List<int> _tabHistory = [0];
   List<Widget>? _screens;
   bool _isExitDialogShowing = false;
+  bool _isCheckingUpdate = false;
+  DateTime? _lastUpdateCheck;
 
   void _switchTab(int index) {
     if (index >= 0 && index < (_screens?.length ?? 5)) {
@@ -51,6 +55,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Wire FCM push → silent refresh of Orders + Dashboard ViewModels.
     // This ensures new-order notifications trigger a live data reload
     // regardless of which tab the vendor is currently viewing.
@@ -90,6 +95,40 @@ class _AppShellState extends State<AppShell> {
         dashboardVm.fetchDashboard();
       };
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_isCheckingUpdate) {
+      // Only check once per hour — don't spam user
+      final now = DateTime.now();
+      if (_lastUpdateCheck != null &&
+          now.difference(_lastUpdateCheck!).inMinutes < 60) {
+        return;
+      }
+      _checkForUpdate();
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_isCheckingUpdate) return;
+    _isCheckingUpdate = true;
+    _lastUpdateCheck = DateTime.now();
+    try {
+      final result = await UpdateService.instance.checkForUpdate();
+      if (!mounted) return;
+      if (result.hasUpdate) {
+        await showUpdateDialog(context, result);
+      }
+    } finally {
+      _isCheckingUpdate = false;
+    }
   }
 
   @override
