@@ -298,6 +298,8 @@ class _AuthInterceptor extends Interceptor {
       ApiEndpoints.otpSend,
       ApiEndpoints.otpVerify,
       ApiEndpoints.otpLogin,
+      ApiEndpoints.vendorWaOtpSend,
+      ApiEndpoints.vendorWaOtpVerify,
     ];
 
     final needsAuth = !noAuthPaths.any((p) => options.path.contains(p));

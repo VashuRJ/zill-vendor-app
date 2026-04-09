@@ -35,18 +35,24 @@ DioException fakeDioError(int statusCode, dynamic data) => DioException(
       ),
     );
 
-// Successful login response body (vendor login wraps under "data" key)
-const kLoginSuccessBody = {
-  'data': {
-    'tokens': {'access': 'acc_token_123', 'refresh': 'ref_token_456'},
-    'user': {'id': 1, 'username': 'raj_vendor', 'user_type': 'vendor'},
-  },
+// WhatsApp OTP login response (existing vendor — action: "login")
+const kWaOtpLoginBody = {
+  'action': 'login',
+  'tokens': {'access': 'acc_token_123', 'refresh': 'ref_token_456'},
+  'user': {'id': 1, 'name': 'Raj Kitchen', 'user_type': 'vendor'},
 };
 
-// OTP login response (flat — no "data" wrapper)
-const kOtpLoginSuccessBody = {
-  'tokens': {'access': 'acc_token_123', 'refresh': 'ref_token_456'},
-  'user': {'id': 1, 'username': 'raj_vendor', 'user_type': 'vendor'},
+// WhatsApp OTP response — new vendor needs name (action: "register_required")
+const kWaOtpRegisterRequiredBody = {
+  'action': 'register_required',
+  'message': 'Please provide a restaurant name to complete registration.',
+};
+
+// WhatsApp OTP response — newly registered vendor (action: "registered")
+const kWaOtpRegisteredBody = {
+  'action': 'registered',
+  'tokens': {'access': 'acc_token_789', 'refresh': 'ref_token_abc'},
+  'user': {'id': 2, 'name': 'New Place', 'user_type': 'vendor'},
 };
 
 void main() {
@@ -144,9 +150,73 @@ void main() {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // login
+  // requestWhatsAppOtp
   // ─────────────────────────────────────────────────────────────────────────
-  group('login', () {
+  group('requestWhatsAppOtp', () {
+    test('returns success on 200', () async {
+      when(() => api.post(any(), data: any(named: 'data'))).thenAnswer(
+        (_) async => fakeResponse({'message': 'OTP sent via WhatsApp.'}),
+      );
+
+      final result = await vm.requestWhatsAppOtp(phone: '9876543210');
+
+      expect(result.success, isTrue);
+      expect(result.message, 'OTP sent via WhatsApp.');
+    });
+
+    test('returns failure with wait_time on 429 (rate limited)', () async {
+      when(() => api.post(any(), data: any(named: 'data')))
+          .thenThrow(fakeDioError(429, {'wait_time': 45}));
+
+      final result = await vm.requestWhatsAppOtp(phone: '9876543210');
+
+      expect(result.success, isFalse);
+      expect(result.waitSeconds, 45);
+      expect(result.message, contains('Too many'));
+    });
+
+    test('trims phone number before sending', () async {
+      when(() => api.post(
+            any(),
+            data: {'phone': '9876543210'},
+          )).thenAnswer((_) async => fakeResponse({'message': 'sent'}));
+
+      await vm.requestWhatsAppOtp(phone: '  9876543210  ');
+
+      verify(() => api.post(
+            any(),
+            data: {'phone': '9876543210'},
+          )).called(1);
+    });
+
+    test('isWaOtpSendLoading is true during request then false after', () async {
+      final loadingValues = <bool>[];
+      vm.addListener(() => loadingValues.add(vm.isWaOtpSendLoading));
+
+      when(() => api.post(any(), data: any(named: 'data')))
+          .thenAnswer((_) async => fakeResponse({'message': 'sent'}));
+
+      await vm.requestWhatsAppOtp(phone: '9876543210');
+
+      expect(loadingValues, contains(true));
+      expect(vm.isWaOtpSendLoading, isFalse);
+    });
+
+    test('returns friendly message on 503 (WhatsApp service unavailable)', () async {
+      when(() => api.post(any(), data: any(named: 'data')))
+          .thenThrow(fakeDioError(503, {}));
+
+      final result = await vm.requestWhatsAppOtp(phone: '9876543210');
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('WhatsApp service unavailable'));
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // verifyWhatsAppOtp
+  // ─────────────────────────────────────────────────────────────────────────
+  group('verifyWhatsAppOtp', () {
     setUp(() {
       when(
         () => storage.saveTokens(
@@ -154,7 +224,6 @@ void main() {
           refreshToken: any(named: 'refreshToken'),
         ),
       ).thenAnswer((_) async {});
-
       when(
         () => storage.saveUserInfo(
           userId: any(named: 'userId'),
@@ -164,24 +233,57 @@ void main() {
       ).thenAnswer((_) async {});
     });
 
-    test('returns true and sets authenticated on 200 success', () async {
+    test('returns success and authenticates existing vendor', () async {
       when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse(kLoginSuccessBody));
+          .thenAnswer((_) async => fakeResponse(kWaOtpLoginBody));
 
-      final result =
-          await vm.login(loginId: 'raj@test.com', password: 'secret');
+      final result = await vm.verifyWhatsAppOtp(
+        phone: '9876543210',
+        otp: '123456',
+      );
 
-      expect(result, isTrue);
+      expect(result.success, isTrue);
+      expect(result.action, 'login');
       expect(vm.status, AuthStatus.authenticated);
-      expect(vm.username, 'raj_vendor');
-      expect(vm.errorMessage, isNull);
+      expect(vm.username, 'Raj Kitchen');
     });
 
-    test('saves tokens and user info to storage on success', () async {
+    test('returns register_required for new vendor (no login yet)', () async {
       when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse(kLoginSuccessBody));
+          .thenAnswer((_) async => fakeResponse(kWaOtpRegisterRequiredBody));
 
-      await vm.login(loginId: 'raj@test.com', password: 'secret');
+      final result = await vm.verifyWhatsAppOtp(
+        phone: '9999999999',
+        otp: '654321',
+      );
+
+      expect(result.success, isTrue);
+      expect(result.action, 'register_required');
+      // Should NOT be authenticated yet
+      expect(vm.status, isNot(AuthStatus.authenticated));
+    });
+
+    test('registers and authenticates new vendor with restaurant name', () async {
+      when(() => api.post(any(), data: any(named: 'data')))
+          .thenAnswer((_) async => fakeResponse(kWaOtpRegisteredBody));
+
+      final result = await vm.verifyWhatsAppOtp(
+        phone: '9999999999',
+        otp: '654321',
+        restaurantName: 'New Place',
+      );
+
+      expect(result.success, isTrue);
+      expect(result.action, 'registered');
+      expect(vm.status, AuthStatus.authenticated);
+      expect(vm.username, 'New Place');
+    });
+
+    test('saves tokens and user info to storage on login', () async {
+      when(() => api.post(any(), data: any(named: 'data')))
+          .thenAnswer((_) async => fakeResponse(kWaOtpLoginBody));
+
+      await vm.verifyWhatsAppOtp(phone: '9876543210', otp: '123456');
 
       verify(
         () => storage.saveTokens(
@@ -189,127 +291,22 @@ void main() {
           refreshToken: 'ref_token_456',
         ),
       ).called(1);
-
-      verify(
-        () => storage.saveUserInfo(
-          userId: 1,
-          username: 'raj_vendor',
-          userType: 'vendor',
-        ),
-      ).called(1);
     });
 
-    test('goes through loading state before authenticating', () async {
-      final states = <AuthStatus>[];
-      vm.addListener(() => states.add(vm.status));
-
+    test('returns failure on 400 (invalid OTP)', () async {
       when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse(kLoginSuccessBody));
+          .thenThrow(fakeDioError(400, {'message': 'Invalid OTP'}));
 
-      await vm.login(loginId: 'raj@test.com', password: 'secret');
-
-      expect(states, containsAllInOrder([AuthStatus.loading, AuthStatus.authenticated]));
-    });
-
-    test('trims whitespace from loginId before sending', () async {
-      when(() => api.post(
-            any(),
-            data: {'login': 'raj@test.com', 'password': 'secret'},
-          )).thenAnswer((_) async => fakeResponse(kLoginSuccessBody));
-
-      await vm.login(loginId: '  raj@test.com  ', password: 'secret');
-
-      verify(() => api.post(
-            any(),
-            data: {'login': 'raj@test.com', 'password': 'secret'},
-          )).called(1);
-    });
-
-    test('returns false and sets error on 401 (wrong credentials)', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(401, {'detail': 'Invalid credentials'}));
-
-      final result =
-          await vm.login(loginId: 'wrong@test.com', password: 'bad');
-
-      expect(result, isFalse);
-      expect(vm.status, AuthStatus.error);
-      expect(
-        vm.errorMessage,
-        'Incorrect email or password. Please try again.',
-      );
-    });
-
-    test('returns false with vendor-access error on 403', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(403, {'detail': 'Forbidden'}));
-
-      final result = await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(result, isFalse);
-      // The 'detail' key is parsed directly before the status-code switch,
-      // so the server's raw message is returned as-is.
-      expect(vm.errorMessage, 'Forbidden');
-    });
-
-    test('returns false with rate-limit message on 429', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(429, {}));
-
-      await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(vm.errorMessage, contains('Too many'));
-    });
-
-    test('parses DRF message shape: { "message": "..." }', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenThrow(
-        fakeDioError(400, {'message': 'Account is deactivated'}),
+      final result = await vm.verifyWhatsAppOtp(
+        phone: '9876543210',
+        otp: '000000',
       );
 
-      await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(vm.errorMessage, 'Account is deactivated');
+      expect(result.success, isFalse);
+      expect(result.message, 'Invalid OTP');
     });
 
-    test('parses DRF non_field_errors shape', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenThrow(
-        fakeDioError(400, {
-          'non_field_errors': ['Unable to log in with provided credentials.'],
-        }),
-      );
-
-      await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(vm.errorMessage, 'Unable to log in with provided credentials.');
-    });
-
-    test('parses nested error.message shape', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenThrow(
-        fakeDioError(400, {
-          'error': {'message': 'Phone number not verified'},
-        }),
-      );
-
-      await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(vm.errorMessage, 'Phone number not verified');
-    });
-
-    test('returns connection-timeout message when no server response', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenThrow(
-        DioException(
-          type: DioExceptionType.connectionTimeout,
-          requestOptions: RequestOptions(path: ''),
-        ),
-      );
-
-      final result = await vm.login(loginId: 'a@b.com', password: 'p');
-
-      expect(result, isFalse);
-      expect(vm.errorMessage, contains('timed out'));
-    });
-
-    test('returns cannot-reach-server message on connectionError', () async {
+    test('returns network error message when no response', () async {
       when(() => api.post(any(), data: any(named: 'data'))).thenThrow(
         DioException(
           type: DioExceptionType.connectionError,
@@ -317,20 +314,26 @@ void main() {
         ),
       );
 
-      await vm.login(loginId: 'a@b.com', password: 'p');
+      final result = await vm.verifyWhatsAppOtp(
+        phone: '9876543210',
+        otp: '123456',
+      );
 
-      expect(vm.errorMessage, contains('Cannot reach server'));
+      expect(result.success, isFalse);
+      expect(result.message, contains('Network error'));
     });
 
-    test('handles unexpected non-Dio exception gracefully', () async {
+    test('isWaOtpVerifyLoading is true during request then false after', () async {
+      final loadingValues = <bool>[];
+      vm.addListener(() => loadingValues.add(vm.isWaOtpVerifyLoading));
+
       when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(Exception('unknown'));
+          .thenAnswer((_) async => fakeResponse(kWaOtpLoginBody));
 
-      final result = await vm.login(loginId: 'a@b.com', password: 'p');
+      await vm.verifyWhatsAppOtp(phone: '9876543210', otp: '123456');
 
-      expect(result, isFalse);
-      expect(vm.status, AuthStatus.error);
-      expect(vm.errorMessage, isNotNull);
+      expect(loadingValues, contains(true));
+      expect(vm.isWaOtpVerifyLoading, isFalse);
     });
   });
 
@@ -385,189 +388,9 @@ void main() {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // requestPasswordReset
-  // ─────────────────────────────────────────────────────────────────────────
-  group('requestPasswordReset', () {
-    test('returns success: true with server message on 200', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenAnswer(
-        (_) async => fakeResponse({'message': 'OTP sent to your email'}),
-      );
-
-      final result =
-          await vm.requestPasswordReset(email: 'vendor@test.com');
-
-      expect(result.success, isTrue);
-      expect(result.message, 'OTP sent to your email');
-    });
-
-    test('uses fallback message when server response has no message field',
-        () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse({}));
-
-      final result = await vm.requestPasswordReset(email: 'v@test.com');
-
-      expect(result.success, isTrue);
-      expect(result.message, isNotEmpty);
-    });
-
-    test('returns success: false with 404 (email not found)', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(404, {}));
-
-      final result = await vm.requestPasswordReset(email: 'nobody@test.com');
-
-      expect(result.success, isFalse);
-      expect(result.message, contains('No account found'));
-    });
-
-    test('isResetLoading is true during request then false after', () async {
-      final loadingValues = <bool>[];
-      vm.addListener(() => loadingValues.add(vm.isResetLoading));
-
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse({'message': 'sent'}));
-
-      await vm.requestPasswordReset(email: 'v@test.com');
-
-      expect(loadingValues, contains(true));
-      expect(vm.isResetLoading, isFalse);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // requestOtp
-  // ─────────────────────────────────────────────────────────────────────────
-  group('requestOtp', () {
-    test('returns success on 200', () async {
-      when(() => api.post(any(), data: any(named: 'data'))).thenAnswer(
-        (_) async => fakeResponse({'message': 'OTP sent successfully.'}),
-      );
-
-      final result = await vm.requestOtp(email: 'vendor@test.com');
-
-      expect(result.success, isTrue);
-      expect(result.message, 'OTP sent successfully.');
-    });
-
-    test('sends purpose=login in the request payload', () async {
-      when(() => api.post(
-            any(),
-            data: {'email': 'vendor@test.com', 'purpose': 'login'},
-          )).thenAnswer((_) async => fakeResponse({'message': 'sent'}));
-
-      await vm.requestOtp(email: 'vendor@test.com');
-
-      verify(() => api.post(
-            any(),
-            data: {'email': 'vendor@test.com', 'purpose': 'login'},
-          )).called(1);
-    });
-
-    test('returns failure on 429 (rate limited)', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(429, {}));
-
-      final result = await vm.requestOtp(email: 'vendor@test.com');
-
-      expect(result.success, isFalse);
-      expect(result.message, contains('Too many'));
-    });
-
-    test('isOtpSendLoading is true during request then false after', () async {
-      final loadingValues = <bool>[];
-      vm.addListener(() => loadingValues.add(vm.isOtpSendLoading));
-
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse({'message': 'sent'}));
-
-      await vm.requestOtp(email: 'vendor@test.com');
-
-      expect(loadingValues, contains(true));
-      expect(vm.isOtpSendLoading, isFalse);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // verifyOtpAndLogin
-  // ─────────────────────────────────────────────────────────────────────────
-  group('verifyOtpAndLogin', () {
-    setUp(() {
-      when(
-        () => storage.saveTokens(
-          accessToken: any(named: 'accessToken'),
-          refreshToken: any(named: 'refreshToken'),
-        ),
-      ).thenAnswer((_) async {});
-      when(
-        () => storage.saveUserInfo(
-          userId: any(named: 'userId'),
-          username: any(named: 'username'),
-          userType: any(named: 'userType'),
-        ),
-      ).thenAnswer((_) async {});
-    });
-
-    test('returns success and authenticates on valid OTP', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => fakeResponse(kOtpLoginSuccessBody));
-
-      final result = await vm.verifyOtpAndLogin(
-        email: 'vendor@test.com',
-        otp: '123456',
-      );
-
-      expect(result.success, isTrue);
-      expect(vm.status, AuthStatus.authenticated);
-      expect(vm.username, 'raj_vendor');
-    });
-
-    test('returns failure on 400 (invalid OTP)', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(400, {'message': 'Invalid OTP'}));
-
-      final result = await vm.verifyOtpAndLogin(
-        email: 'vendor@test.com',
-        otp: '000000',
-      );
-
-      expect(result.success, isFalse);
-      expect(result.message, isNotEmpty);
-    });
-
-    test('returns failure on 404 (no vendor account)', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(404, {}));
-
-      final result = await vm.verifyOtpAndLogin(
-        email: 'unknown@test.com',
-        otp: '123456',
-      );
-
-      expect(result.success, isFalse);
-      expect(result.message, contains('No vendor account'));
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
   // clearError
   // ─────────────────────────────────────────────────────────────────────────
   group('clearError', () {
-    test('clears error message and notifies listeners', () async {
-      when(() => api.post(any(), data: any(named: 'data')))
-          .thenThrow(fakeDioError(401, {}));
-      await vm.login(loginId: 'x', password: 'y');
-      expect(vm.errorMessage, isNotNull);
-
-      var notified = false;
-      vm.addListener(() => notified = true);
-
-      vm.clearError();
-
-      expect(vm.errorMessage, isNull);
-      expect(notified, isTrue);
-    });
-
     test('does NOT notify listeners when errorMessage is already null', () {
       var notified = false;
       vm.addListener(() => notified = true);

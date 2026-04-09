@@ -24,6 +24,10 @@ class ApiEndpoints {
   static const String otpVerify = '/users/otp/verify/'; // POST {email, otp, purpose}
   static const String otpLogin = '/users/otp/login/'; // POST {phone, otp}
 
+  // WhatsApp OTP Auth (Login + Register combined)
+  static const String vendorWaOtpSend = '/users/vendor/auth/send-otp/'; // POST {phone}
+  static const String vendorWaOtpVerify = '/users/vendor/auth/verify-otp/'; // POST {phone, otp, name?}
+
   // Profile
   static const String profile = '/vendors/profile/';
   static const String settings = '/vendors/settings/';

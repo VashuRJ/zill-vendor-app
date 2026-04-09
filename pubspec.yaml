@@ -104,6 +104,9 @@ dependencies:
   # Dynamic app version display (reads from pubspec.yaml at runtime)
   package_info_plus: ^8.0.0
 
+  # Brand icons (WhatsApp, etc.)
+  font_awesome_flutter: ^10.7.0
+
   # WebSocket (real-time order updates & notifications)
   web_socket_channel: ^3.0.1
 

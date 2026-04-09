@@ -2,28 +2,26 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
-import '../../../core/routing/app_router.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../core/utils/app_logger.dart';
 import '../viewmodel/auth_viewmodel.dart';
-import 'forgot_password_sheet.dart';
 import 'otp_login_sheet.dart';
 
 // ── Colour palette ───────────────────────────────────────────────────
 const _brand = Color(0xFFFF6B35);
-const _brandDark = Color(0xFFE55A2B);
 const _ink = Color(0xFF1A1A2E);
 const _muted = Color(0xFF6B7280);
 const _label = Color(0xFF374151);
 const _surface = Color(0xFFF7F7F8);
 const _error = Color(0xFFDC2626);
 const _success = Color(0xFF059669);
-
-const _registerUrl = 'https://zill.co.in/vendor/register.html';
+const _whatsapp = Color(0xFF25D366);
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -35,23 +33,17 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen>
     with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
-  final _emailCtrl = TextEditingController();
-  final _passwordCtrl = TextEditingController();
-  final _emailFocus = FocusNode();
-  final _passwordFocus = FocusNode();
-  bool _obscurePass = true;
-  bool _loginSuccess = false;
+  final _phoneCtrl = TextEditingController();
+  final _phoneFocus = FocusNode();
+
+  // Cooldown timer for OTP resend throttle
+  int _cooldownSeconds = 0;
+  Timer? _cooldownTimer;
 
   // Page enter animation
   late final AnimationController _animCtrl;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
-
-  // Success overlay animation
-  late final AnimationController _successCtrl;
-  late final Animation<double> _overlayFade;
-  late final Animation<double> _checkPop;
-  late final Animation<double> _textSlide;
 
   @override
   void initState() {
@@ -75,35 +67,38 @@ class _LoginScreenState extends State<LoginScreen>
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
     _animCtrl.forward();
-
-    // Success overlay
-    _successCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    );
-    _overlayFade = CurvedAnimation(
-      parent: _successCtrl,
-      curve: const Interval(0.0, 0.3, curve: Curves.easeOut),
-    );
-    _checkPop = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(
-      parent: _successCtrl,
-      curve: const Interval(0.2, 0.7, curve: Curves.elasticOut),
-    ));
-    _textSlide = CurvedAnimation(
-      parent: _successCtrl,
-      curve: const Interval(0.45, 0.85, curve: Curves.easeOutCubic),
-    );
   }
 
   @override
   void dispose() {
     _animCtrl.dispose();
-    _successCtrl.dispose();
-    _emailCtrl.dispose();
-    _passwordCtrl.dispose();
-    _emailFocus.dispose();
-    _passwordFocus.dispose();
+    _phoneCtrl.dispose();
+    _phoneFocus.dispose();
+    _cooldownTimer?.cancel();
     super.dispose();
+  }
+
+  void _startCooldown(int seconds) {
+    _cooldownTimer?.cancel();
+    setState(() => _cooldownSeconds = seconds > 0 ? seconds : 60);
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      setState(() {
+        if (_cooldownSeconds > 0) {
+          _cooldownSeconds--;
+        } else {
+          t.cancel();
+        }
+      });
+    });
+  }
+
+  String _fmtCooldown(int seconds) {
+    if (seconds <= 0) return '';
+    if (seconds < 60) return '${seconds}s';
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return s == 0 ? '${m}m' : '${m}m ${s}s';
   }
 
   void _showSnack(String message, {bool isError = true}) {
@@ -119,7 +114,7 @@ class _LoginScreenState extends State<LoginScreen>
               Icon(
                 isError
                     ? Icons.error_outline_rounded
-                    : Icons.info_outline_rounded,
+                    : Icons.check_circle_outline_rounded,
                 color: Colors.white,
                 size: 19,
               ),
@@ -135,7 +130,7 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ],
           ),
-          backgroundColor: isError ? _error : _brand,
+          backgroundColor: isError ? _error : _success,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -147,163 +142,36 @@ class _LoginScreenState extends State<LoginScreen>
       );
   }
 
-  Future<void> _handleLogin() async {
+  // ── Send OTP via WhatsApp ─────────────────────────────────────────
+  Future<void> _handleSendOtp() async {
+    if (_cooldownSeconds > 0) return;
     FocusScope.of(context).unfocus();
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
-    final messenger = ScaffoldMessenger.maybeOf(context);
     final authVM = context.read<AuthViewModel>();
     authVM.clearError();
 
     try {
-      final success = await authVM.login(
-        loginId: _emailCtrl.text.trim(),
-        password: _passwordCtrl.text,
+      final result = await authVM.requestWhatsAppOtp(
+        phone: _phoneCtrl.text.trim(),
       );
 
       if (!mounted) return;
 
-      if (success) {
-        messenger?.clearSnackBars();
-        setState(() => _loginSuccess = true);
-        _successCtrl.forward();
-        await Future.delayed(const Duration(milliseconds: 1400));
-        if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed(AppRouter.home);
+      if (result.success) {
+        // Open the OTP verification bottom sheet
+        showOtpLoginSheet(context, prefillPhone: _phoneCtrl.text.trim());
       } else {
-        _showSnackWithMessenger(
-          messenger,
-          authVM.errorMessage ?? 'Login failed. Please try again.',
-        );
+        if (result.waitSeconds > 0) _startCooldown(result.waitSeconds);
+        _showSnack(result.message);
       }
     } catch (e) {
-      AppLogger.e('_handleLogin error: $e');
-      _showSnackWithMessenger(
-          messenger, 'Something went wrong. Please try again.');
+      AppLogger.e('_handleSendOtp error: $e');
+      if (mounted) _showSnack('Something went wrong. Please try again.');
     }
   }
 
-  void _showSnackWithMessenger(
-    ScaffoldMessengerState? messenger,
-    String message, {
-    bool isError = true,
-  }) {
-    try {
-      messenger
-        ?..clearSnackBars()
-        ..showSnackBar(SnackBar(
-          content: Row(
-            children: [
-              Icon(
-                isError
-                    ? Icons.error_outline_rounded
-                    : Icons.info_outline_rounded,
-                color: Colors.white,
-                size: 19,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  message,
-                  style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: isError ? _error : _brand,
-          behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          margin: const EdgeInsets.all(16),
-          duration: const Duration(seconds: 5),
-          dismissDirection: DismissDirection.up,
-        ));
-    } catch (_) {}
-  }
-
-  Future<void> _openRegistration() async {
-    final uri = Uri.parse(_registerUrl);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (mounted) _showSnack('Could not open registration page');
-    }
-  }
-
-  // ── Success overlay (full-screen) ──────────────────────────────────
-  Widget _buildSuccessOverlay() {
-    return AnimatedBuilder(
-      animation: _successCtrl,
-      builder: (context, _) {
-        return FadeTransition(
-          opacity: _overlayFade,
-          child: Container(
-            color: Colors.white,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Animated check circle
-                  ScaleTransition(
-                    scale: _checkPop,
-                    child: Container(
-                      width: 80,
-                      height: 80,
-                      decoration: const BoxDecoration(
-                        color: _success,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.check_rounded,
-                        size: 44,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  // "You're in!" text slides up
-                  FadeTransition(
-                    opacity: _textSlide,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0, 0.3),
-                        end: Offset.zero,
-                      ).animate(_textSlide),
-                      child: Column(
-                        children: [
-                          Text(
-                            'You\'re in!',
-                            style: GoogleFonts.poppins(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              color: _ink,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Setting up your dashboard...',
-                            style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w400,
-                              color: _muted,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
+  // ── Header — Logo + branding ──────────────────────────────────────
   Widget _buildHeader() {
     return Column(
       children: [
@@ -326,9 +194,10 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
+  // ── Main form card — phone input + send OTP ───────────────────────
   Widget _buildFormCard() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
+      padding: const EdgeInsets.fromLTRB(22, 28, 22, 24),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
@@ -350,8 +219,9 @@ class _LoginScreenState extends State<LoginScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Heading
             Text(
-              'Welcome back',
+              'Partner Login / Register',
               style: GoogleFonts.poppins(
                 fontSize: 21,
                 fontWeight: FontWeight.w700,
@@ -359,81 +229,211 @@ class _LoginScreenState extends State<LoginScreen>
                 height: 1.2,
               ),
             ),
-            const SizedBox(height: 3),
+            const SizedBox(height: 6),
             Text(
-              'Sign in to manage your restaurant',
-              style: GoogleFonts.poppins(fontSize: 13, color: _muted),
-            ),
-            const SizedBox(height: 24),
-            _ZillField(
-              label: 'Email or mobile number',
-              hint: 'you@example.com',
-              controller: _emailCtrl,
-              focusNode: _emailFocus,
-              prefixIcon: Icons.mail_outline_rounded,
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              inputFormatters: [
-                FilteringTextInputFormatter.deny(RegExp(r'\s')),
-              ],
-              onEditingComplete: () =>
-                  FocusScope.of(context).requestFocus(_passwordFocus),
-              validator: (v) => (v == null || v.trim().isEmpty)
-                  ? 'Email or phone is required'
-                  : null,
-            ),
-            const SizedBox(height: 16),
-            _ZillField(
-              label: 'Password',
-              hint: '••••••••',
-              controller: _passwordCtrl,
-              focusNode: _passwordFocus,
-              prefixIcon: Icons.lock_outline_rounded,
-              obscureText: _obscurePass,
-              textInputAction: TextInputAction.done,
-              onEditingComplete: _handleLogin,
-              suffixIcon: GestureDetector(
-                onTap: () => setState(() => _obscurePass = !_obscurePass),
-                child: Icon(
-                  _obscurePass
-                      ? Icons.visibility_off_outlined
-                      : Icons.visibility_outlined,
-                  color: _muted,
-                  size: 20,
-                ),
+              'Enter your WhatsApp number to sign in or create an account',
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                color: _muted,
+                height: 1.45,
               ),
+            ),
+            const SizedBox(height: 26),
+
+            // Phone number field label
+            Text(
+              'WhatsApp number',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: _label,
+              ),
+            ),
+            const SizedBox(height: 7),
+
+            // Phone number input
+            TextFormField(
+              controller: _phoneCtrl,
+              focusNode: _phoneFocus,
+              keyboardType: TextInputType.phone,
+              textInputAction: TextInputAction.done,
+              maxLength: 10,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              onEditingComplete: _handleSendOtp,
               validator: (v) {
-                if (v == null || v.isEmpty) return 'Password is required';
-                if (v.length < 6) return 'Minimum 6 characters';
+                if (v == null || v.trim().isEmpty) {
+                  return 'Phone number is required';
+                }
+                if (!RegExp(r'^[6-9]\d{9}$').hasMatch(v.trim())) {
+                  return 'Enter a valid 10-digit number starting with 6-9';
+                }
                 return null;
               },
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => showForgotPasswordSheet(context),
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.only(top: 8, bottom: 2),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                color: _ink,
+                fontWeight: FontWeight.w500,
+              ),
+              decoration: InputDecoration(
+                hintText: '98765 43210',
+                counterText: '',
+                hintStyle: GoogleFonts.poppins(
+                  fontSize: 13.5,
+                  color: const Color(0xFFBBBDC3),
+                  fontWeight: FontWeight.w400,
                 ),
-                child: Text(
-                  'Forgot Password?',
-                  style: GoogleFonts.poppins(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: _brand,
+                filled: true,
+                fillColor: _surface,
+                prefixIcon: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: _whatsapp),
+                      const SizedBox(width: 8),
+                      Text(
+                        '+91',
+                        style: GoogleFonts.poppins(
+                          fontSize: 13.5,
+                          color: _ink,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(width: 1, height: 18, color: const Color(0xFFDDE0E4)),
+                    ],
                   ),
                 ),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 80,
+                  minHeight: 48,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 16,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: Color(0xFFEBEDF0), width: 1),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: _brand, width: 2.0),
+                ),
+                errorBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: _error, width: 1.2),
+                ),
+                focusedErrorBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: _error, width: 1.8),
+                ),
+                errorStyle: GoogleFonts.poppins(
+                  fontSize: 11,
+                  color: _error,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
-            const SizedBox(height: 18),
-            // ── Sign In button (simple — loading spinner only) ──
+
+            const SizedBox(height: 20),
+
+            // ── Send OTP button ─────────────────────────────────
             Consumer<AuthViewModel>(
-              builder: (context, auth, _) => _SignInButton(
-                isLoading: auth.isLoading,
-                onPressed: _handleLogin,
-              ),
+              builder: (context, auth, _) {
+                final loading = auth.isWaOtpSendLoading;
+                final onCooldown = _cooldownSeconds > 0;
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      height: 52,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: (loading || onCooldown)
+                              ? _ink.withValues(alpha: 0.55)
+                              : _ink,
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: (loading || onCooldown)
+                              ? null
+                              : [
+                                  BoxShadow(
+                                    color: _ink.withValues(alpha: 0.25),
+                                    blurRadius: 16,
+                                    offset: const Offset(0, 6),
+                                  ),
+                                ],
+                        ),
+                        child: ElevatedButton(
+                          onPressed: (loading || onCooldown) ? null : _handleSendOtp,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            disabledBackgroundColor: Colors.transparent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            child: loading
+                                ? const SizedBox(
+                                    key: ValueKey('loading'),
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    ),
+                                  )
+                                : Row(
+                                    key: const ValueKey('idle'),
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const FaIcon(
+                                        FontAwesomeIcons.whatsapp,
+                                        size: 18,
+                                        color: Colors.white,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        'Send OTP via WhatsApp',
+                                        style: GoogleFonts.poppins(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 0.3,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Cooldown text
+                    if (onCooldown) ...[
+                      const SizedBox(height: 10),
+                      Center(
+                        child: Text(
+                          'Try again in ${_fmtCooldown(_cooldownSeconds)}',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: _muted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
             ),
           ],
         ),
@@ -441,66 +441,32 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  Widget _buildOtpSection() {
-    return Column(
-      children: [
-        const SizedBox(height: 24),
-        Row(
-          children: [
-            const Expanded(
-              child: Divider(color: Color(0xFFE5E7EB), thickness: 1),
+  // ── Secure badge row ──────────────────────────────────────────────
+  Widget _buildSecureBadge() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 24),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.lock_outline_rounded, size: 14, color: _muted.withValues(alpha: 0.6)),
+          const SizedBox(width: 6),
+          Text(
+            'Secured with end-to-end encryption',
+            style: GoogleFonts.poppins(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w500,
+              color: _muted.withValues(alpha: 0.6),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(
-                'or',
-                style: GoogleFonts.poppins(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: _muted,
-                ),
-              ),
-            ),
-            const Expanded(
-              child: Divider(color: Color(0xFFE5E7EB), thickness: 1),
-            ),
-          ],
-        ),
-        const SizedBox(height: 20),
-        OutlinedButton(
-          onPressed: () => showOtpLoginSheet(context),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: _ink,
-            side: const BorderSide(color: Color(0xFFDDE0E4), width: 1.4),
-            minimumSize: const Size.fromHeight(50),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            backgroundColor: Colors.white,
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.sms_outlined, size: 20, color: _brand),
-              const SizedBox(width: 10),
-              Text(
-                'Login with OTP',
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: _ink,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildRegistration() {
+  // ── Footer ────────────────────────────────────────────────────────
+  Widget _buildFooter() {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.only(bottom: 20),
       child: Column(
         children: [
           Row(
@@ -511,7 +477,7 @@ class _LoginScreenState extends State<LoginScreen>
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Text(
-                  'RESTAURANT OWNERS',
+                  'RESTAURANT PARTNERS',
                   style: GoogleFonts.poppins(
                     fontSize: 9.5,
                     fontWeight: FontWeight.w600,
@@ -525,30 +491,27 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'New to Zill? ',
-                style: GoogleFonts.poppins(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: _muted,
-                ),
+          const SizedBox(height: 14),
+          RichText(
+            textAlign: TextAlign.center,
+            text: TextSpan(
+              style: GoogleFonts.poppins(
+                fontSize: 12.5,
+                color: _muted,
+                fontWeight: FontWeight.w400,
               ),
-              GestureDetector(
-                onTap: _openRegistration,
-                child: Text(
-                  'Register your restaurant',
+              children: [
+                const TextSpan(text: 'By continuing, you agree to our '),
+                TextSpan(
+                  text: 'Terms of Service',
                   style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
                     color: _brand,
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -559,242 +522,33 @@ class _LoginScreenState extends State<LoginScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
-      body: Stack(
-        children: [
-          // Login form
-          SafeArea(
-            child: FadeTransition(
-              opacity: _fadeAnim,
-              child: SlideTransition(
-                position: _slideAnim,
-                child: CustomScrollView(
-                  physics: const ClampingScrollPhysics(),
-                  slivers: [
-                    SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Column(
-                          children: [
-                            const SizedBox(height: 44),
-                            _buildHeader(),
-                            const Spacer(),
-                            _buildFormCard(),
-                            _buildOtpSection(),
-                            const Spacer(flex: 2),
-                            _buildRegistration(),
-                          ],
-                        ),
-                      ),
+      body: SafeArea(
+        child: FadeTransition(
+          opacity: _fadeAnim,
+          child: SlideTransition(
+            position: _slideAnim,
+            child: CustomScrollView(
+              physics: const ClampingScrollPhysics(),
+              slivers: [
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 44),
+                        _buildHeader(),
+                        const Spacer(),
+                        _buildFormCard(),
+                        _buildSecureBadge(),
+                        const Spacer(flex: 2),
+                        _buildFooter(),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // Full-screen success overlay
-          if (_loginSuccess) _buildSuccessOverlay(),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  Reusable text field
-// ─────────────────────────────────────────────────────────────────────
-class _ZillField extends StatelessWidget {
-  const _ZillField({
-    required this.label,
-    required this.hint,
-    required this.controller,
-    required this.prefixIcon,
-    this.focusNode,
-    this.keyboardType,
-    this.textInputAction,
-    this.onEditingComplete,
-    this.obscureText = false,
-    this.suffixIcon,
-    this.validator,
-    this.inputFormatters,
-  });
-
-  final String label;
-  final String hint;
-  final TextEditingController controller;
-  final IconData prefixIcon;
-  final FocusNode? focusNode;
-  final TextInputType? keyboardType;
-  final TextInputAction? textInputAction;
-  final VoidCallback? onEditingComplete;
-  final bool obscureText;
-  final Widget? suffixIcon;
-  final String? Function(String?)? validator;
-  final List<TextInputFormatter>? inputFormatters;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.poppins(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: _label,
-          ),
-        ),
-        const SizedBox(height: 7),
-        TextFormField(
-          controller: controller,
-          focusNode: focusNode,
-          keyboardType: keyboardType,
-          textInputAction: textInputAction,
-          onEditingComplete: onEditingComplete,
-          obscureText: obscureText,
-          validator: validator,
-          inputFormatters: inputFormatters,
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            color: _ink,
-            fontWeight: FontWeight.w500,
-          ),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: GoogleFonts.poppins(
-              fontSize: 13.5,
-              color: const Color(0xFFBBBDC3),
-              fontWeight: FontWeight.w400,
-            ),
-            filled: true,
-            fillColor: _surface,
-            prefixIcon: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Icon(prefixIcon, color: _muted, size: 19),
-            ),
-            prefixIconConstraints: const BoxConstraints(
-              minWidth: 48,
-              minHeight: 48,
-            ),
-            suffixIcon: suffixIcon != null
-                ? Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: suffixIcon,
-                  )
-                : null,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 16,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide.none,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide:
-                  const BorderSide(color: Color(0xFFEBEDF0), width: 1),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: _brand, width: 2.0),
-            ),
-            errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: _error, width: 1.2),
-            ),
-            focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: _error, width: 1.8),
-            ),
-            errorStyle: GoogleFonts.poppins(
-              fontSize: 11,
-              color: _error,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  Simple Sign-In button — gradient + loading spinner
-// ─────────────────────────────────────────────────────────────────────
-class _SignInButton extends StatelessWidget {
-  const _SignInButton({required this.isLoading, required this.onPressed});
-
-  final bool isLoading;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 52,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: isLoading
-              ? null
-              : const LinearGradient(
-                  colors: [_brand, _brandDark],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-          color: isLoading ? _brand.withValues(alpha: 0.55) : null,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: isLoading
-              ? null
-              : [
-                  BoxShadow(
-                    color: _brand.withValues(alpha: 0.30),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
                   ),
-                ],
-        ),
-        child: ElevatedButton(
-          onPressed: isLoading ? null : onPressed,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.transparent,
-            shadowColor: Colors.transparent,
-            disabledBackgroundColor: Colors.transparent,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
+                ),
+              ],
             ),
-          ),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
-            child: isLoading
-                ? const SizedBox(
-                    key: ValueKey('loading'),
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
-                  )
-                : Row(
-                    key: const ValueKey('idle'),
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Sign In',
-                        style: GoogleFonts.poppins(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(Icons.arrow_forward_rounded, size: 19),
-                    ],
-                  ),
           ),
         ),
       ),

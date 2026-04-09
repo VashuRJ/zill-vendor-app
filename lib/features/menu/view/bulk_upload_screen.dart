@@ -10,7 +10,7 @@ import '../../../core/services/api_service.dart';
 import '../viewmodel/bulk_upload_viewmodel.dart';
 
 // ────────────────────────────────────────────────────────────────────
-//  Bulk CSV Upload Screen
+//  Entry point — creates ViewModel and injects ApiService
 // ────────────────────────────────────────────────────────────────────
 class BulkUploadScreen extends StatelessWidget {
   const BulkUploadScreen({super.key});
@@ -26,8 +26,102 @@ class BulkUploadScreen extends StatelessWidget {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────
+//  Main scaffold body
+// ────────────────────────────────────────────────────────────────────
 class _BulkUploadBody extends StatelessWidget {
   const _BulkUploadBody();
+
+  // ── Clear-existing confirmation dialog ──────────────────────────────
+  // Shows a dialog requiring the user to press "Confirm Delete" before
+  // the upload proceeds when clearExisting is enabled.
+  Future<bool> _confirmClearExisting(BuildContext context) async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.errorLight,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.delete_forever_rounded,
+                color: AppColors.error,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Clear Entire Menu?',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'You have enabled "Clear existing menu". This will permanently '
+          'delete ALL your current menu items and categories before the '
+          'import runs.\n\nThis action cannot be undone.',
+          style: TextStyle(
+            fontSize: 13,
+            color: AppColors.textSecondary,
+            height: 1.5,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        actions: [
+          OutlinedButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.textSecondary,
+              side: const BorderSide(color: AppColors.border),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Cancel'),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            icon: const Icon(Icons.delete_forever_rounded, size: 18),
+            label: const Text('Confirm Delete'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  // ── Upload tap handler (guards clearExisting with dialog) ───────────
+  Future<void> _handleUploadTap(
+      BuildContext context, BulkUploadViewModel vm) async {
+    if (!vm.canUpload) return;
+
+    if (vm.clearExisting) {
+      final confirmed = await _confirmClearExisting(context);
+      if (!confirmed) return;
+    }
+
+    await vm.uploadMenu();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -67,55 +161,62 @@ class _BulkUploadBody extends StatelessWidget {
             });
           }
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // ── Instructions + Template Card ──────────────────
-                _InstructionsCard(vm: vm),
-                const SizedBox(height: 16),
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // ── Instructions + Template ──────────────────────
+                  _InstructionsCard(vm: vm),
+                  const SizedBox(height: 16),
 
-                // ── File Selection ───────────────────────────────
-                _FilePickerCard(vm: vm),
-                const SizedBox(height: 16),
+                  // ── File Selection ───────────────────────────────
+                  _FilePickerCard(vm: vm),
+                  const SizedBox(height: 16),
 
-                // ── Upload Options ──────────────────────────────
-                _OptionsCard(vm: vm),
-                const SizedBox(height: 24),
+                  // ── Upload Options ───────────────────────────────
+                  _OptionsCard(vm: vm),
+                  const SizedBox(height: 24),
 
-                // ── Upload Button + Progress ────────────────────
-                _UploadButton(vm: vm),
-                if (vm.isLoading && vm.uploadProgress > 0) ...[
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: LinearProgressIndicator(
-                      value: vm.uploadProgress,
-                      minHeight: 6,
-                      backgroundColor: AppColors.border,
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        AppColors.primary,
+                  // ── Upload Button ────────────────────────────────
+                  _UploadButton(
+                    vm: vm,
+                    onTap: () => _handleUploadTap(context, vm),
+                  ),
+
+                  // ── Upload Progress ──────────────────────────────
+                  if (vm.isLoading && vm.uploadProgress > 0) ...[
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: vm.uploadProgress,
+                        minHeight: 6,
+                        backgroundColor: AppColors.border,
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          AppColors.primary,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${(vm.uploadProgress * 100).toStringAsFixed(0)}% uploaded',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
+                    const SizedBox(height: 4),
+                    Text(
+                      '${(vm.uploadProgress * 100).toStringAsFixed(0)}% uploaded',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
 
-                // ── Result Summary ──────────────────────────────
-                if (vm.uploadResult != null) ...[
-                  const SizedBox(height: 20),
-                  _ResultSummaryCard(result: vm.uploadResult!),
+                  // ── Result Summary ───────────────────────────────
+                  if (vm.uploadResult != null) ...[
+                    const SizedBox(height: 20),
+                    _ResultSummaryCard(result: vm.uploadResult!),
+                  ],
                 ],
-              ],
+              ),
             ),
           );
         },
@@ -287,7 +388,8 @@ class _FilePickerCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
-          color: file != null ? AppColors.success.withAlpha(80) : AppColors.border,
+          color:
+              file != null ? AppColors.success.withAlpha(80) : AppColors.border,
           width: file != null ? 1.5 : 1,
         ),
       ),
@@ -296,9 +398,8 @@ class _FilePickerCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: file == null
-              ? _buildEmptyState()
-              : _buildSelectedState(file, context),
+          child:
+              file == null ? _buildEmptyState() : _buildSelectedState(file),
         ),
       ),
     );
@@ -331,17 +432,14 @@ class _FilePickerCard extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         const Text(
-          'Only .csv files are accepted',
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textHint,
-          ),
+          'Only .csv files · Max 5 MB',
+          style: TextStyle(fontSize: 12, color: AppColors.textHint),
         ),
       ],
     );
   }
 
-  Widget _buildSelectedState(dynamic file, BuildContext context) {
+  Widget _buildSelectedState(dynamic file) {
     return Row(
       children: [
         Container(
@@ -363,7 +461,7 @@ class _FilePickerCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                file.name,
+                file.name as String,
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
@@ -372,11 +470,11 @@ class _FilePickerCard extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              if (file.size != null && file.size > 0)
+              if ((file.size as int) > 0)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text(
-                    _formatFileSize(file.size),
+                    _formatFileSize(file.size as int),
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppColors.textSecondary,
@@ -431,10 +529,36 @@ class _OptionsCard extends StatelessWidget {
                 ),
               ),
             ),
+            // ── Clear existing (danger toggle) ─────────────────────
             SwitchListTile(
-              title: const Text(
-                'Clear existing menu',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+              title: Row(
+                children: [
+                  const Text(
+                    'Clear existing menu',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  if (vm.clearExisting) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.errorLight,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'DANGER',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.error,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
               subtitle: const Text(
                 'Delete all current items before import',
@@ -486,9 +610,10 @@ class _OptionsCard extends StatelessWidget {
 //  Upload Button
 // ────────────────────────────────────────────────────────────────────
 class _UploadButton extends StatelessWidget {
-  const _UploadButton({required this.vm});
+  const _UploadButton({required this.vm, required this.onTap});
 
   final BulkUploadViewModel vm;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -496,7 +621,8 @@ class _UploadButton extends StatelessWidget {
       width: double.infinity,
       height: 50,
       child: ElevatedButton.icon(
-        onPressed: vm.canUpload ? vm.uploadMenu : null,
+        // Use the parent-provided handler so the dialog can intercept.
+        onPressed: vm.canUpload ? onTap : null,
         icon: vm.isLoading
             ? const SizedBox(
                 width: 20,
@@ -527,7 +653,7 @@ class _UploadButton extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  Result Summary Card
+//  Result Summary Card  (Fix 3 · 4 · 5 · 6)
 // ────────────────────────────────────────────────────────────────────
 class _ResultSummaryCard extends StatelessWidget {
   const _ResultSummaryCard({required this.result});
@@ -536,24 +662,38 @@ class _ResultSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ── Parse all backend fields ──────────────────────────────────────
     final categoriesCreated = result['categories_created'] ?? 0;
     final itemsCreated = result['items_created'] ?? 0;
     final itemsUpdated = result['items_updated'] ?? 0;
     final itemsSkipped = result['items_skipped'] ?? 0;
+    final totalItemsNow = result['total_items_now'];
+    final totalCategoriesNow = result['total_categories_now'];
+    final imagesFetched = result['images_fetched'];
+
+    // Fix 3 — parse_warnings
+    final warnings = (result['parse_warnings'] as List<dynamic>?)
+            ?.map((w) => w.toString())
+            .toList() ??
+        [];
+
+    // Core errors list
     final errors = (result['errors'] as List<dynamic>?)
             ?.map((e) => e.toString())
             .toList() ??
         [];
 
+    final hasIssues = errors.isNotEmpty || warnings.isNotEmpty;
+
     return Card(
       elevation: 0,
-      color: errors.isEmpty ? AppColors.successLight : AppColors.warningLight,
+      color: hasIssues ? AppColors.warningLight : AppColors.successLight,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
-          color: errors.isEmpty
-              ? AppColors.success.withAlpha(60)
-              : AppColors.warning.withAlpha(60),
+          color: hasIssues
+              ? AppColors.warning.withAlpha(60)
+              : AppColors.success.withAlpha(60),
         ),
       ),
       child: Padding(
@@ -561,27 +701,26 @@ class _ResultSummaryCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Header ─────────────────────────────────────────────
             Row(
               children: [
                 Icon(
-                  errors.isEmpty
-                      ? Icons.check_circle_rounded
-                      : Icons.warning_amber_rounded,
-                  color: errors.isEmpty ? AppColors.success : AppColors.warning,
+                  hasIssues
+                      ? Icons.warning_amber_rounded
+                      : Icons.check_circle_rounded,
+                  color: hasIssues ? AppColors.warning : AppColors.success,
                   size: 22,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    errors.isEmpty
-                        ? 'Upload Successful!'
-                        : 'Upload completed with warnings',
+                    hasIssues
+                        ? 'Upload completed with warnings'
+                        : 'Upload Successful!',
                     style: TextStyle(
                       fontWeight: FontWeight.w700,
                       fontSize: 15,
-                      color: errors.isEmpty
-                          ? AppColors.success
-                          : AppColors.warning,
+                      color: hasIssues ? AppColors.warning : AppColors.success,
                     ),
                   ),
                 ),
@@ -589,9 +728,9 @@ class _ResultSummaryCard extends StatelessWidget {
             ),
             const SizedBox(height: 16),
 
-            // ── Stats Grid ──────────────────────────────────────
+            // ── Fix 4 + 5 — Stat chips grid ───────────────────────
             Wrap(
-              spacing: 12,
+              spacing: 10,
               runSpacing: 10,
               children: [
                 _StatChip(
@@ -614,12 +753,90 @@ class _ResultSummaryCard extends StatelessWidget {
                   value: '$itemsSkipped',
                   color: AppColors.textSecondary,
                 ),
+                // Fix 4 — total_items_now
+                if (totalItemsNow != null)
+                  _StatChip(
+                    label: 'Total Items\nNow',
+                    value: '$totalItemsNow',
+                    color: AppColors.teal,
+                  ),
+                // Fix 4 — total_categories_now
+                if (totalCategoriesNow != null)
+                  _StatChip(
+                    label: 'Total Categories\nNow',
+                    value: '$totalCategoriesNow',
+                    color: AppColors.purple,
+                  ),
+                // Fix 5 — images_fetched
+                if (imagesFetched != null)
+                  _StatChip(
+                    label: 'Images\nFetched',
+                    value: '$imagesFetched',
+                    color: AppColors.amber,
+                  ),
               ],
             ),
 
-            // ── Row Errors ──────────────────────────────────────
-            if (errors.isNotEmpty) ...[
+            // ── Fix 3 — parse_warnings section ────────────────────
+            if (warnings.isNotEmpty) ...[
               const SizedBox(height: 16),
+              const Divider(height: 1),
+              const SizedBox(height: 8),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 8),
+                initiallyExpanded: warnings.length <= 5,
+                shape: const Border(),
+                leading: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: AppColors.warning,
+                  size: 20,
+                ),
+                title: Text(
+                  '${warnings.length} parse warning${warnings.length > 1 ? 's' : ''}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.warning,
+                  ),
+                ),
+                children: [
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: warnings.length,
+                    itemBuilder: (_, i) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.info_outline_rounded,
+                            size: 15,
+                            color: AppColors.warning,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              warnings[i],
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: AppColors.textSecondary,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+
+            // ── Row errors (unchanged logic, kept in sync) ─────────
+            if (errors.isNotEmpty) ...[
+              const SizedBox(height: 8),
               const Divider(height: 1),
               const SizedBox(height: 8),
               ExpansionTile(
@@ -627,10 +844,15 @@ class _ResultSummaryCard extends StatelessWidget {
                 childrenPadding: const EdgeInsets.only(bottom: 8),
                 initiallyExpanded: errors.length <= 5,
                 shape: const Border(),
+                leading: const Icon(
+                  Icons.error_outline_rounded,
+                  color: AppColors.error,
+                  size: 20,
+                ),
                 title: Text(
                   '${errors.length} row error${errors.length > 1 ? 's' : ''}',
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                     color: AppColors.error,
                   ),
@@ -647,7 +869,7 @@ class _ResultSummaryCard extends StatelessWidget {
                         children: [
                           const Icon(
                             Icons.error_outline_rounded,
-                            size: 16,
+                            size: 15,
                             color: AppColors.error,
                           ),
                           const SizedBox(width: 8),
@@ -668,6 +890,32 @@ class _ResultSummaryCard extends StatelessWidget {
                 ],
               ),
             ],
+
+            // ── Fix 6 — "Back to Menu" button ─────────────────────
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                label: const Text('Back to Menu'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.success,
+                  side:
+                      BorderSide(color: AppColors.success.withAlpha(80)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  textStyle: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -675,6 +923,9 @@ class _ResultSummaryCard extends StatelessWidget {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────
+//  Stat Chip widget
+// ────────────────────────────────────────────────────────────────────
 class _StatChip extends StatelessWidget {
   const _StatChip({
     required this.label,

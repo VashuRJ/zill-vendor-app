@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import '../../../core/routing/app_router.dart';
 import '../../../core/utils/app_logger.dart';
@@ -26,59 +27,82 @@ String _fmtCooldown(int seconds) {
   return s == 0 ? '${m}m' : '${m}m ${s}s';
 }
 
-/// Opens the OTP Login bottom sheet.
-void showOtpLoginSheet(BuildContext context) {
+/// Opens the WhatsApp OTP Login bottom sheet.
+/// If [prefillPhone] is provided, skips the phone-input step and goes
+/// straight to OTP verification.
+void showOtpLoginSheet(BuildContext context, {String? prefillPhone}) {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => const _OtpLoginSheet(),
+    builder: (_) => _WaOtpLoginSheet(prefillPhone: prefillPhone),
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  Main OTP bottom sheet — manages Step A ↔ Step B
+//  3-step flow:
+//   Step.phone  → phone number input → send WhatsApp OTP
+//   Step.otp    → 6-box OTP verify   → login or register_required
+//   Step.name   → restaurant name    → complete registration
 // ─────────────────────────────────────────────────────────────────────
-class _OtpLoginSheet extends StatefulWidget {
-  const _OtpLoginSheet();
+enum _Step { phone, otp, name }
+
+class _WaOtpLoginSheet extends StatefulWidget {
+  const _WaOtpLoginSheet({this.prefillPhone});
+
+  final String? prefillPhone;
 
   @override
-  State<_OtpLoginSheet> createState() => _OtpLoginSheetState();
+  State<_WaOtpLoginSheet> createState() => _WaOtpLoginSheetState();
 }
 
-class _OtpLoginSheetState extends State<_OtpLoginSheet> {
-  final _emailCtrl = TextEditingController();
-  final _emailFormKey = GlobalKey<FormState>();
+class _WaOtpLoginSheetState extends State<_WaOtpLoginSheet> {
+  late _Step _step;
 
-  // Step A = email input, Step B = OTP verification
-  bool _otpSent = false;
-  String _email = '';
+  // Step phone
+  final _phoneCtrl = TextEditingController();
+  final _phoneFormKey = GlobalKey<FormState>();
+  String? _phoneError;
 
-  // Rate-limit cooldown (seconds remaining until user can send OTP again)
+  // Step otp
+  String _phone = '';
+  String _enteredOtp = '';         // kept for the name-step second call
   int _cooldownSeconds = 0;
   Timer? _cooldownTimer;
 
-  // Inline error shown below the email field (SnackBars render behind the sheet)
-  String? _sendError;
+  // Step name
+  final _nameCtrl = TextEditingController();
+  String? _nameError;
 
   @override
   void initState() {
     super.initState();
-    _emailCtrl.addListener(() {
-      if (_sendError != null) setState(() => _sendError = null);
+
+    // If phone was pre-filled from login screen, skip to OTP step
+    if (widget.prefillPhone != null && widget.prefillPhone!.isNotEmpty) {
+      _phone = widget.prefillPhone!;
+      _phoneCtrl.text = widget.prefillPhone!;
+      _step = _Step.otp;
+    } else {
+      _step = _Step.phone;
+    }
+
+    _phoneCtrl.addListener(() {
+      if (_phoneError != null) setState(() => _phoneError = null);
     });
   }
 
   @override
   void dispose() {
-    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
+    _nameCtrl.dispose();
     _cooldownTimer?.cancel();
     super.dispose();
   }
 
   void _startCooldown(int seconds) {
     _cooldownTimer?.cancel();
-    setState(() => _cooldownSeconds = seconds);
+    setState(() => _cooldownSeconds = seconds > 0 ? seconds : 60);
     _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
       setState(() {
@@ -91,11 +115,8 @@ class _OtpLoginSheetState extends State<_OtpLoginSheet> {
     });
   }
 
-
   void _showSnack(String message, {bool isError = true}) {
     if (!mounted) return;
-    // Use maybeOf so we don't crash if the sheet is being dismissed while
-    // an async OTP call is still in-flight and returns after deactivation.
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
     messenger
@@ -138,36 +159,37 @@ class _OtpLoginSheetState extends State<_OtpLoginSheet> {
   Future<void> _handleSendOtp() async {
     if (_cooldownSeconds > 0) return;
     FocusScope.of(context).unfocus();
-    if (!(_emailFormKey.currentState?.validate() ?? false)) return;
+    if (!(_phoneFormKey.currentState?.validate() ?? false)) return;
 
     try {
       final authVM = context.read<AuthViewModel>();
-      final result = await authVM.requestOtp(email: _emailCtrl.text.trim());
+      final result = await authVM.requestWhatsAppOtp(
+        phone: _phoneCtrl.text.trim(),
+      );
 
       if (!mounted) return;
 
       if (result.success) {
         setState(() {
-          _email = _emailCtrl.text.trim();
-          _sendError = null;
-          _otpSent = true;
+          _phone = _phoneCtrl.text.trim();
+          _phoneError = null;
+          _step = _Step.otp;
         });
       } else {
         if (result.waitSeconds > 0) _startCooldown(result.waitSeconds);
-        // Show inline — snack bars render on the login screen Scaffold (behind the sheet)
-        setState(() => _sendError = result.message);
+        setState(() => _phoneError = result.message);
       }
     } catch (e) {
       AppLogger.e('_handleSendOtp error: $e');
-      if (mounted) setState(() => _sendError = 'Something went wrong. Please try again.');
+      if (mounted) setState(() => _phoneError = 'Something went wrong. Please try again.');
     }
   }
 
-  // ── Resend OTP (Step B) — skips form validation, sends to known email ──
+  // ── Resend OTP ────────────────────────────────────────────────────
   Future<({bool success, int waitSeconds})> _resendOtp() async {
     try {
-      final result = await context.read<AuthViewModel>().requestOtp(
-        email: _email,
+      final result = await context.read<AuthViewModel>().requestWhatsAppOtp(
+        phone: _phone,
       );
       if (!mounted) return (success: false, waitSeconds: 0);
       if (!result.success) _showSnack(result.message);
@@ -179,14 +201,51 @@ class _OtpLoginSheetState extends State<_OtpLoginSheet> {
     }
   }
 
-  // ── OTP verified → navigate ───────────────────────────────────────
-  void _onOtpVerified() {
+  // ── OTP verified → navigate or go to name step ───────────────────
+  void _onOtpVerified(String otp, String action) {
     if (!mounted) return;
-    // pushNamedAndRemoveUntil clears the entire route stack (bottom sheet
-    // + login screen) in a single atomic operation, avoiding the race
-    // condition where pop() invalidates the context before the second
-    // Navigator call can execute.
+    _enteredOtp = otp;
+
+    if (action == 'register_required') {
+      setState(() => _step = _Step.name);
+      return;
+    }
+
     Navigator.of(context).pushNamedAndRemoveUntil(AppRouter.home, (route) => false);
+  }
+
+  // ── Submit restaurant name (new vendor) ───────────────────────────
+  Future<void> _handleRegister() async {
+    FocusScope.of(context).unfocus();
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _nameError = 'Restaurant name is required');
+      return;
+    }
+    if (name.length < 2) {
+      setState(() => _nameError = 'Name must be at least 2 characters');
+      return;
+    }
+
+    try {
+      final authVM = context.read<AuthViewModel>();
+      final result = await authVM.verifyWhatsAppOtp(
+        phone: _phone,
+        otp: _enteredOtp,
+        restaurantName: name,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        Navigator.of(context).pushNamedAndRemoveUntil(AppRouter.home, (route) => false);
+      } else {
+        setState(() => _nameError = result.message);
+      }
+    } catch (e) {
+      AppLogger.e('_handleRegister error: $e');
+      if (mounted) setState(() => _nameError = 'Something went wrong. Please try again.');
+    }
   }
 
   @override
@@ -203,34 +262,42 @@ class _OtpLoginSheetState extends State<_OtpLoginSheet> {
         duration: const Duration(milliseconds: 350),
         switchInCurve: Curves.easeOut,
         switchOutCurve: Curves.easeIn,
-        child: _otpSent
-            ? _OtpVerifyView(
-                key: const ValueKey('verify'),
-                email: _email,
-                onVerified: _onOtpVerified,
-                onBack: () => setState(() => _otpSent = false),
-                onResend: _resendOtp,
-                showSnack: _showSnack,
-              )
-            : _EmailInputView(
-                key: const ValueKey('email'),
-                formKey: _emailFormKey,
-                controller: _emailCtrl,
-                onSend: _handleSendOtp,
-                onClose: () => Navigator.of(context).pop(),
-                cooldownSeconds: _cooldownSeconds,
-                errorText: _sendError,
-              ),
+        child: switch (_step) {
+          _Step.phone => _PhoneInputView(
+              key: const ValueKey('phone'),
+              formKey: _phoneFormKey,
+              controller: _phoneCtrl,
+              onSend: _handleSendOtp,
+              onClose: () => Navigator.of(context).pop(),
+              cooldownSeconds: _cooldownSeconds,
+              errorText: _phoneError,
+            ),
+          _Step.otp => _OtpVerifyView(
+              key: const ValueKey('otp'),
+              phone: _phone,
+              onVerified: _onOtpVerified,
+              onBack: () => setState(() => _step = _Step.phone),
+              onResend: _resendOtp,
+              showSnack: _showSnack,
+            ),
+          _Step.name => _RestaurantNameView(
+              key: const ValueKey('name'),
+              controller: _nameCtrl,
+              onSubmit: _handleRegister,
+              onBack: () => setState(() => _step = _Step.phone),
+              errorText: _nameError,
+            ),
+        },
       ),
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  Step A — Email address input
+//  Step 1 — Phone number input
 // ─────────────────────────────────────────────────────────────────────
-class _EmailInputView extends StatelessWidget {
-  const _EmailInputView({
+class _PhoneInputView extends StatelessWidget {
+  const _PhoneInputView({
     super.key,
     required this.formKey,
     required this.controller,
@@ -270,16 +337,16 @@ class _EmailInputView extends StatelessWidget {
 
           // Title
           Text(
-            'Login with OTP',
+            'Login with WhatsApp OTP',
             style: GoogleFonts.poppins(
-              fontSize: 22,
+              fontSize: 21,
               fontWeight: FontWeight.w700,
               color: _ink,
             ),
           ),
           const SizedBox(height: 6),
           Text(
-            "Enter your registered email address and we'll send a one-time code.",
+            "Enter your registered mobile number. We'll send a one-time code via WhatsApp.",
             style: GoogleFonts.poppins(
               fontSize: 13,
               color: _muted,
@@ -288,9 +355,9 @@ class _EmailInputView extends StatelessWidget {
           ),
           const SizedBox(height: 24),
 
-          // Email field
+          // Phone field
           Text(
-            'Email address',
+            'Mobile number',
             style: GoogleFonts.poppins(
               fontSize: 12,
               fontWeight: FontWeight.w600,
@@ -300,19 +367,15 @@ class _EmailInputView extends StatelessWidget {
           const SizedBox(height: 7),
           TextFormField(
             controller: controller,
-            keyboardType: TextInputType.emailAddress,
+            keyboardType: TextInputType.phone,
             textInputAction: TextInputAction.done,
             onEditingComplete: onSend,
+            maxLength: 10,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             validator: (v) {
-              if (v == null || v.trim().isEmpty) {
-                return 'Email is required';
-              }
-              final emailRegex = RegExp(
-                r'^[\w\.\-\+]+@[\w\-]+\.[\w\-]{2,}$',
-                caseSensitive: false,
-              );
-              if (!emailRegex.hasMatch(v.trim())) {
-                return 'Enter a valid email address';
+              if (v == null || v.trim().isEmpty) return 'Mobile number is required';
+              if (!RegExp(r'^[6-9]\d{9}$').hasMatch(v.trim())) {
+                return 'Enter a valid 10-digit number starting with 6-9';
               }
               return null;
             },
@@ -322,7 +385,8 @@ class _EmailInputView extends StatelessWidget {
               fontWeight: FontWeight.w500,
             ),
             decoration: InputDecoration(
-              hintText: 'you@example.com',
+              hintText: '98765 43210',
+              counterText: '',
               hintStyle: GoogleFonts.poppins(
                 fontSize: 13.5,
                 color: const Color(0xFFBBBDC3),
@@ -330,32 +394,35 @@ class _EmailInputView extends StatelessWidget {
               ),
               filled: true,
               fillColor: _surface,
-              prefixIcon: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 14),
-                child: Icon(
-                  Icons.mail_outline_rounded,
-                  color: _muted,
-                  size: 19,
+              prefixIcon: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.phone_android_rounded, color: _muted, size: 19),
+                    const SizedBox(width: 8),
+                    Text(
+                      '+91',
+                      style: GoogleFonts.poppins(
+                        fontSize: 13.5,
+                        color: _ink,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(width: 1, height: 18, color: const Color(0xFFDDE0E4)),
+                  ],
                 ),
               ),
-              prefixIconConstraints: const BoxConstraints(
-                minWidth: 48,
-                minHeight: 48,
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 16,
-              ),
+              prefixIconConstraints: const BoxConstraints(minWidth: 80, minHeight: 48),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide.none,
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
-                borderSide: const BorderSide(
-                  color: Color(0xFFEBEDF0),
-                  width: 1,
-                ),
+                borderSide: const BorderSide(color: Color(0xFFEBEDF0), width: 1),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
@@ -377,47 +444,24 @@ class _EmailInputView extends StatelessWidget {
             ),
           ),
 
-          // Inline error (SnackBars render on the login screen Scaffold, behind the sheet)
+          // Inline error
           if (errorText != null) ...[
             const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: _error.withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _error.withValues(alpha: 0.25), width: 1),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.error_outline_rounded, color: _error, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      errorText!,
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        color: _error,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _ErrorBanner(message: errorText!),
           ],
           const SizedBox(height: 16),
 
           // Send OTP button
           Consumer<AuthViewModel>(
             builder: (context, auth, _) {
-              final loading = auth.isOtpSendLoading;
+              final loading = auth.isWaOtpSendLoading;
               final onCooldown = cooldownSeconds > 0;
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _GradientButton(
-                    label: 'Send OTP',
-                    icon: Icons.arrow_forward_rounded,
+                    label: 'Send OTP via WhatsApp',
+                    iconWidget: const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: Colors.white),
                     isLoading: loading,
                     onPressed: onSend,
                     disabled: onCooldown,
@@ -441,15 +485,12 @@ class _EmailInputView extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // Back
           Center(
             child: TextButton(
               onPressed: onClose,
-              style: TextButton.styleFrom(
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
+              style: TextButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
               child: Text(
-                'Back to Sign In',
+                'Cancel',
                 style: GoogleFonts.poppins(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
@@ -465,20 +506,20 @@ class _EmailInputView extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  Step B — OTP verification (6 separate boxes)
+//  Step 2 — OTP verification (6 separate boxes)
 // ─────────────────────────────────────────────────────────────────────
 class _OtpVerifyView extends StatefulWidget {
   const _OtpVerifyView({
     super.key,
-    required this.email,
+    required this.phone,
     required this.onVerified,
     required this.onBack,
     required this.onResend,
     required this.showSnack,
   });
 
-  final String email;
-  final VoidCallback onVerified;
+  final String phone;
+  final void Function(String otp, String action) onVerified;
   final VoidCallback onBack;
   final Future<({bool success, int waitSeconds})> Function() onResend;
   final void Function(String message, {bool isError}) showSnack;
@@ -493,7 +534,7 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
   late final List<FocusNode> _focusNodes;
 
   Timer? _resendTimer;
-  int _resendSeconds = 30;
+  int _resendSeconds = 60;
   bool get _canResend => _resendSeconds == 0;
 
   @override
@@ -503,7 +544,6 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
     _focusNodes = List.generate(_otpLength, (_) => FocusNode());
     _startResendTimer();
 
-    // Focus first box on open
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNodes[0].requestFocus();
     });
@@ -521,8 +561,8 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
     super.dispose();
   }
 
-  void _startResendTimer([int seconds = 30]) {
-    _resendSeconds = seconds > 0 ? seconds : 30;
+  void _startResendTimer([int seconds = 60]) {
+    _resendSeconds = seconds > 0 ? seconds : 60;
     _resendTimer?.cancel();
     _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) { timer.cancel(); return; }
@@ -546,15 +586,15 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
 
     try {
       final authVM = context.read<AuthViewModel>();
-      final result = await authVM.verifyOtpAndLogin(
-        email: widget.email,
+      final result = await authVM.verifyWhatsAppOtp(
+        phone: widget.phone,
         otp: otp,
       );
 
       if (!mounted) return;
 
       if (result.success) {
-        widget.onVerified();
+        widget.onVerified(otp, result.action);
       } else {
         widget.showSnack(result.message);
         for (final c in _controllers) {
@@ -564,9 +604,7 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
       }
     } catch (e) {
       AppLogger.e('_handleVerify error: $e');
-      if (mounted) {
-        widget.showSnack('Something went wrong. Please try again.');
-      }
+      if (mounted) widget.showSnack('Something went wrong. Please try again.');
     }
   }
 
@@ -576,22 +614,20 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
     if (!mounted) return;
     if (result.success) {
       _startResendTimer();
-      widget.showSnack('OTP resent to ${widget.email}', isError: false);
+      widget.showSnack(
+        'OTP resent to ${widget.phone.substring(0, 2)}****${widget.phone.substring(6)}',
+        isError: false,
+      );
     } else if (result.waitSeconds > 0) {
-      // Use server-side wait time so the countdown matches the backend limit.
       _startResendTimer(result.waitSeconds);
     }
-    // Error snack already shown by _resendOtp().
   }
 
   @override
   Widget build(BuildContext context) {
-    // Mask email: show first 2 chars + *** + @domain
-    final email = widget.email;
-    final atIndex = email.indexOf('@');
-    final masked = atIndex > 2
-        ? '${email.substring(0, 2)}${'*' * (atIndex - 2)}${email.substring(atIndex)}'
-        : email;
+    final masked = widget.phone.length >= 10
+        ? '+91 ${widget.phone.substring(0, 2)}****${widget.phone.substring(6)}'
+        : widget.phone;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -610,7 +646,6 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
         ),
         const SizedBox(height: 24),
 
-        // Title
         Text(
           'Verify OTP',
           style: GoogleFonts.poppins(
@@ -622,13 +657,9 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
         const SizedBox(height: 6),
         RichText(
           text: TextSpan(
-            style: GoogleFonts.poppins(
-              fontSize: 13,
-              color: _muted,
-              height: 1.5,
-            ),
+            style: GoogleFonts.poppins(fontSize: 13, color: _muted, height: 1.5),
             children: [
-              const TextSpan(text: 'Enter the 6-digit code sent to '),
+              const TextSpan(text: 'Enter the 6-digit code sent via WhatsApp to '),
               TextSpan(
                 text: masked,
                 style: GoogleFonts.poppins(
@@ -642,7 +673,7 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
         ),
         const SizedBox(height: 28),
 
-        // ── OTP boxes ──
+        // OTP boxes
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: List.generate(_otpLength, (i) {
@@ -673,10 +704,7 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                      color: Color(0xFFEBEDF0),
-                      width: 1,
-                    ),
+                    borderSide: const BorderSide(color: Color(0xFFEBEDF0), width: 1),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -689,10 +717,7 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
                   } else if (value.isEmpty && i > 0) {
                     _focusNodes[i - 1].requestFocus();
                   }
-                  // Auto-submit when all filled
-                  if (_otpValue.length == _otpLength) {
-                    _handleVerify();
-                  }
+                  if (_otpValue.length == _otpLength) _handleVerify();
                 },
                 onEditingComplete: () {
                   if (i < _otpLength - 1) {
@@ -707,21 +732,17 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
         ),
         const SizedBox(height: 24),
 
-        // ── Verify button ──
         Consumer<AuthViewModel>(
-          builder: (context, auth, _) {
-            final loading = auth.isOtpVerifyLoading;
-            return _GradientButton(
-              label: 'Verify & Login',
-              icon: Icons.check_rounded,
-              isLoading: loading,
-              onPressed: _handleVerify,
-            );
-          },
+          builder: (context, auth, _) => _GradientButton(
+            label: 'Verify & Login',
+            icon: Icons.check_rounded,
+            isLoading: auth.isWaOtpVerifyLoading,
+            onPressed: _handleVerify,
+          ),
         ),
         const SizedBox(height: 16),
 
-        // ── Resend row ──
+        // Resend row
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -744,15 +765,12 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
         ),
         const SizedBox(height: 12),
 
-        // Back
         Center(
           child: TextButton(
             onPressed: widget.onBack,
-            style: TextButton.styleFrom(
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
+            style: TextButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
             child: Text(
-              'Change email address',
+              'Change number',
               style: GoogleFonts.poppins(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
@@ -767,22 +785,197 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  Shared gradient button (reused in both steps)
+//  Step 3 — Restaurant name (new vendor registration only)
+// ─────────────────────────────────────────────────────────────────────
+class _RestaurantNameView extends StatelessWidget {
+  const _RestaurantNameView({
+    super.key,
+    required this.controller,
+    required this.onSubmit,
+    required this.onBack,
+    this.errorText,
+  });
+
+  final TextEditingController controller;
+  final VoidCallback onSubmit;
+  final VoidCallback onBack;
+  final String? errorText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Center(
+          child: Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDDE0E4),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+
+        Text(
+          'Welcome to Zill!',
+          style: GoogleFonts.poppins(
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+            color: _ink,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          "One last step — enter your restaurant name to create your account.",
+          style: GoogleFonts.poppins(fontSize: 13, color: _muted, height: 1.5),
+        ),
+        const SizedBox(height: 24),
+
+        Text(
+          'Restaurant name',
+          style: GoogleFonts.poppins(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: _label,
+          ),
+        ),
+        const SizedBox(height: 7),
+        TextField(
+          controller: controller,
+          keyboardType: TextInputType.name,
+          textInputAction: TextInputAction.done,
+          textCapitalization: TextCapitalization.words,
+          onEditingComplete: onSubmit,
+          style: GoogleFonts.poppins(
+            fontSize: 14,
+            color: _ink,
+            fontWeight: FontWeight.w500,
+          ),
+          decoration: InputDecoration(
+            hintText: 'e.g. Sharma Ji Ka Dhaba',
+            hintStyle: GoogleFonts.poppins(
+              fontSize: 13.5,
+              color: const Color(0xFFBBBDC3),
+              fontWeight: FontWeight.w400,
+            ),
+            filled: true,
+            fillColor: _surface,
+            prefixIcon: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14),
+              child: Icon(Icons.store_rounded, color: _muted, size: 19),
+            ),
+            prefixIconConstraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: Color(0xFFEBEDF0), width: 1),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _brand, width: 2.0),
+            ),
+          ),
+        ),
+
+        if (errorText != null) ...[
+          const SizedBox(height: 10),
+          _ErrorBanner(message: errorText!),
+        ],
+        const SizedBox(height: 16),
+
+        Consumer<AuthViewModel>(
+          builder: (context, auth, _) => _GradientButton(
+            label: 'Create Account',
+            icon: Icons.store_rounded,
+            isLoading: auth.isWaOtpVerifyLoading,
+            onPressed: onSubmit,
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        Center(
+          child: TextButton(
+            onPressed: onBack,
+            style: TextButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: _muted,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Reusable error banner
+// ─────────────────────────────────────────────────────────────────────
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: _error.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _error.withValues(alpha: 0.25), width: 1),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, color: _error, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: _error,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Shared gradient button
 // ─────────────────────────────────────────────────────────────────────
 class _GradientButton extends StatelessWidget {
   const _GradientButton({
     required this.label,
-    required this.icon,
     required this.isLoading,
     required this.onPressed,
+    this.icon,
+    this.iconWidget,
     this.disabled = false,
+    this.iconColor,
   });
 
   final String label;
-  final IconData icon;
+  final IconData? icon;
+  final Widget? iconWidget;
   final bool isLoading;
   final VoidCallback onPressed;
   final bool disabled;
+  final Color? iconColor;
 
   @override
   Widget build(BuildContext context) {
@@ -841,7 +1034,10 @@ class _GradientButton extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Icon(icon, size: 19),
+                    if (iconWidget != null)
+                      iconWidget!
+                    else if (icon != null)
+                      Icon(icon, size: 19, color: iconColor),
                   ],
                 ),
         ),

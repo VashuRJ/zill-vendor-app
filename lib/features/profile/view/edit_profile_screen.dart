@@ -331,14 +331,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const SizedBox(height: AppSizes.md),
                 _buildField(
                   controller: _emailCtrl,
-                  label: 'Email',
+                  label: 'Email (optional)',
                   hint: 'e.g. restaurant@example.com',
                   icon: Icons.email_outlined,
                   keyboardType: TextInputType.emailAddress,
                   validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'Email is required';
-                    if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(v.trim())) {
-                      return 'Enter a valid email';
+                    if (v != null && v.trim().isNotEmpty) {
+                      if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(v.trim())) {
+                        return 'Enter a valid email';
+                      }
                     }
                     return null;
                   },

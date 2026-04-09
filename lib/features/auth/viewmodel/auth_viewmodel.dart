@@ -69,89 +69,6 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   // ----------------------------------------------------------------
-  // Login
-  // POST /api/users/login/vendor/
-  // Payload: { "login": "<username|email|phone>", "password": "..." }
-  // Headers: Content-Type: application/json (set globally in ApiService)
-  // ----------------------------------------------------------------
-  Future<bool> login({
-    required String loginId,
-    required String password,
-  }) async {
-    _status = AuthStatus.loading;
-    _errorMessage = null;
-    notifyListeners();
-
-    final fullUrl = '${ApiEndpoints.baseUrl}${ApiEndpoints.login}';
-    final payload = {'login': loginId.trim(), 'password': password};
-
-    AppLogger.i('LOGIN REQUEST → $fullUrl');
-
-    try {
-      final response = await _apiService.post(
-        ApiEndpoints.login,
-        data: payload,
-      );
-
-      AppLogger.i('LOGIN SUCCESS — HTTP ${response.statusCode}');
-
-      final body = response.data as Map<String, dynamic>;
-      // Vendor login wraps response under "data" key via APIResponse.success()
-      final data = body['data'] as Map<String, dynamic>;
-      final tokens = data['tokens'] as Map<String, dynamic>;
-      final user = data['user'] as Map<String, dynamic>;
-
-      await _storageService.saveTokens(
-        accessToken: tokens['access'] as String,
-        refreshToken: tokens['refresh'] as String,
-      );
-      await _storageService.saveUserInfo(
-        userId: (user['id'] as num).toInt(),
-        username: user['username'] as String,
-        userType: user['user_type'] as String,
-      );
-
-      // Invalidate any in-flight 401 handlers from a previous session so they
-      // don't consume the new refresh token or navigate back to login.
-      _apiService.incrementLoginGeneration();
-      _apiService.resetLoggingOut();
-
-      _username = user['username'] as String;
-      _status = AuthStatus.authenticated;
-      notifyListeners();
-
-      // Register FCM token with backend (non-blocking)
-      _pushService.initialize().catchError((e) {
-        AppLogger.e('FCM init after login failed: $e');
-      });
-
-      return true;
-    } on DioException catch (e) {
-      final statusCode = e.response?.statusCode;
-      AppLogger.e('LOGIN FAILED — HTTP $statusCode');
-
-      if (statusCode == 404) {
-        AppLogger.e(
-          '404 — Wrong URL! Check ApiEndpoints.login path. Hit: $fullUrl',
-        );
-      } else if (statusCode == 400) {
-        AppLogger.w('400 — Bad request. Server message: ${e.response?.data}');
-      }
-
-      _errorMessage = _parseDioError(e);
-      _status = AuthStatus.error;
-      notifyListeners();
-      return false;
-    } catch (e, st) {
-      AppLogger.e('LOGIN UNEXPECTED ERROR', e, st);
-      _errorMessage = 'Unexpected error. Please try again.';
-      _status = AuthStatus.error;
-      notifyListeners();
-      return false;
-    }
-  }
-
-  // ----------------------------------------------------------------
   // Logout
   // POST /api/users/logout/  Body: { "refresh": "..." }
   // ----------------------------------------------------------------
@@ -185,245 +102,106 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   // ----------------------------------------------------------------
-  // Password Reset Request
-  // POST /api/users/password-reset/request/
-  // Payload: { "email": "..." }
+  // WhatsApp OTP — Step 1: Send OTP to phone number
+  // POST /api/users/vendor/auth/send-otp/
+  // Payload: { "phone": "9876543210" }
   // ----------------------------------------------------------------
-  bool _resetLoading = false;
-  bool get isResetLoading => _resetLoading;
+  bool _waOtpSendLoading = false;
+  bool get isWaOtpSendLoading => _waOtpSendLoading;
 
-  Future<({bool success, String message})> requestPasswordReset({
-    required String email,
+  Future<({bool success, String message, int waitSeconds})> requestWhatsAppOtp({
+    required String phone,
   }) async {
-    _resetLoading = true;
+    _waOtpSendLoading = true;
     notifyListeners();
 
     try {
       final response = await _apiService.post(
-        ApiEndpoints.passwordResetRequest,
-        data: {'email': email.trim()},
+        ApiEndpoints.vendorWaOtpSend,
+        data: {'phone': phone.trim()},
       );
 
-      AppLogger.i('PASSWORD RESET REQUEST — HTTP ${response.statusCode}');
+      AppLogger.i('WA OTP SEND — HTTP ${response.statusCode}');
 
-      _resetLoading = false;
-      notifyListeners();
-
-      // Extract success message from response if available
-      final body = response.data;
-      String msg = 'Password reset link sent to your email.';
-      if (body is Map<String, dynamic> && body.containsKey('message')) {
-        msg = body['message'] as String;
-      }
-      return (success: true, message: msg);
-    } on DioException catch (e) {
-      AppLogger.e('PASSWORD RESET FAILED — ${e.response?.statusCode}');
-
-      _resetLoading = false;
-      notifyListeners();
-
-      return (success: false, message: _parseResetError(e));
-    } catch (e) {
-      AppLogger.e('PASSWORD RESET UNEXPECTED: $e');
-      _resetLoading = false;
-      notifyListeners();
-      return (success: false, message: 'Unexpected error. Please try again.');
-    }
-  }
-
-  // ----------------------------------------------------------------
-  // Password Reset — Step 2: Confirm with OTP + new password
-  // POST /api/users/password-reset/confirm/
-  // Payload: { "email": "...", "otp": "...", "new_password": "...", "confirm_password": "..." }
-  // ----------------------------------------------------------------
-  Future<({bool success, String message})> confirmPasswordReset({
-    required String email,
-    required String otp,
-    required String newPassword,
-    required String confirmPassword,
-  }) async {
-    _resetLoading = true;
-    notifyListeners();
-
-    try {
-      final response = await _apiService.post(
-        ApiEndpoints.passwordResetConfirm,
-        data: {
-          'email': email.trim(),
-          'otp': otp.trim(),
-          'new_password': newPassword,
-          'confirm_password': confirmPassword,
-        },
-      );
-
-      AppLogger.i('PASSWORD RESET CONFIRM — HTTP ${response.statusCode}');
-
-      _resetLoading = false;
+      _waOtpSendLoading = false;
       notifyListeners();
 
       final body = response.data;
-      String msg = 'Password reset successful.';
-      if (body is Map<String, dynamic> && body.containsKey('message')) {
-        msg = body['message'] as String;
-      }
-      return (success: true, message: msg);
-    } on DioException catch (e) {
-      AppLogger.e('PASSWORD RESET CONFIRM FAILED — ${e.response?.statusCode}');
-
-      _resetLoading = false;
-      notifyListeners();
-
-      return (success: false, message: _parseResetError(e));
-    } catch (e) {
-      AppLogger.e('PASSWORD RESET CONFIRM UNEXPECTED: $e');
-      _resetLoading = false;
-      notifyListeners();
-      return (success: false, message: 'Unexpected error. Please try again.');
-    }
-  }
-
-  // ----------------------------------------------------------------
-  // Password Reset — Step 2: Verify OTP (before setting new password)
-  // POST /api/users/otp/verify/
-  // Payload: { "email": "...", "otp": "...", "purpose": "password_reset" }
-  // ----------------------------------------------------------------
-  bool _otpResetVerifyLoading = false;
-  bool get isOtpResetVerifyLoading => _otpResetVerifyLoading;
-
-  Future<({bool success, String message})> verifyPasswordResetOtp({
-    required String email,
-    required String otp,
-  }) async {
-    _otpResetVerifyLoading = true;
-    notifyListeners();
-
-    try {
-      final response = await _apiService.post(
-        ApiEndpoints.otpVerify,
-        data: {
-          'email': email.trim(),
-          'otp': otp.trim(),
-          'purpose': 'password_reset',
-        },
-      );
-
-      AppLogger.i('OTP VERIFY (reset) — HTTP ${response.statusCode}');
-
-      _otpResetVerifyLoading = false;
-      notifyListeners();
-
-      return (success: true, message: 'OTP verified.');
-    } on DioException catch (e) {
-      AppLogger.e('OTP VERIFY (reset) FAILED — ${e.response?.statusCode}');
-      _otpResetVerifyLoading = false;
-      notifyListeners();
-      return (success: false, message: _parseResetError(e));
-    } catch (e) {
-      AppLogger.e('OTP VERIFY (reset) UNEXPECTED: $e');
-      _otpResetVerifyLoading = false;
-      notifyListeners();
-      return (success: false, message: 'Unexpected error. Please try again.');
-    }
-  }
-
-  String _parseResetError(DioException e) {
-    if (e.response == null) return 'Network error. Please check your connection.';
-    final data = e.response!.data;
-    if (data is Map<String, dynamic>) {
-      final msg = _parseErrorBody(data);
-      if (msg != null) return msg;
-    }
-    switch (e.response!.statusCode) {
-      case 404:
-        return 'No account found with this email address.';
-      case 429:
-        return 'Too many requests. Please wait a few minutes.';
-      case 500:
-        return 'Server error. Please try again later.';
-      default:
-        return 'Could not send reset link. Please try again.';
-    }
-  }
-
-  // ----------------------------------------------------------------
-  // OTP Login — Step 1: Request OTP
-  // POST /api/users/otp/send/   Payload: { "email": "...", "purpose": "login" }
-  // ----------------------------------------------------------------
-  bool _otpSendLoading = false;
-  bool get isOtpSendLoading => _otpSendLoading;
-
-  Future<({bool success, String message, int waitSeconds})> requestOtp({
-    required String email,
-  }) async {
-    _otpSendLoading = true;
-    notifyListeners();
-
-    try {
-      final response = await _apiService.post(
-        ApiEndpoints.otpSend,
-        data: {'email': email.trim(), 'purpose': 'login'},
-      );
-
-      AppLogger.i('OTP SEND — HTTP ${response.statusCode}');
-
-      _otpSendLoading = false;
-      notifyListeners();
-
-      final body = response.data;
-      String msg = 'OTP sent successfully.';
+      String msg = 'OTP sent via WhatsApp.';
       if (body is Map<String, dynamic> && body.containsKey('message')) {
         msg = body['message'] as String;
       }
       return (success: true, message: msg, waitSeconds: 0);
     } on DioException catch (e) {
-      AppLogger.e('OTP SEND FAILED — ${e.response?.statusCode}');
+      AppLogger.e('WA OTP SEND FAILED — ${e.response?.statusCode}');
 
-      _otpSendLoading = false;
+      _waOtpSendLoading = false;
       notifyListeners();
 
-      // Extract server-side wait_time for 429 so the UI can show a countdown.
       int waitSeconds = 0;
       if (e.response?.statusCode == 429) {
         final data = e.response?.data;
         if (data is Map<String, dynamic>) {
-          waitSeconds = (data['wait_time'] as num?)?.toInt() ?? 0;
+          waitSeconds = (data['wait_time'] as num?)?.toInt() ?? 60;
         }
       }
-      return (success: false, message: _parseOtpError(e), waitSeconds: waitSeconds);
+      return (success: false, message: _parseWaOtpError(e), waitSeconds: waitSeconds);
     } catch (e) {
-      AppLogger.e('OTP SEND UNEXPECTED: $e');
-      _otpSendLoading = false;
+      AppLogger.e('WA OTP SEND UNEXPECTED: $e');
+      _waOtpSendLoading = false;
       notifyListeners();
       return (success: false, message: 'Unexpected error. Please try again.', waitSeconds: 0);
     }
   }
 
   // ----------------------------------------------------------------
-  // OTP Login — Step 2: Verify OTP & authenticate
-  // POST /api/users/otp/login/   Payload: { "email": "...", "otp": "..." }
-  // Response: { tokens: { access, refresh }, user: { id, username, user_type } }
+  // WhatsApp OTP — Step 2: Verify OTP & authenticate (or register)
+  // POST /api/users/vendor/auth/verify-otp/
+  // Payload: { "phone": "...", "otp": "...", "name"?: "Restaurant Name" }
+  // Response actions: "login" | "registered" | "register_required"
   // ----------------------------------------------------------------
-  bool _otpVerifyLoading = false;
-  bool get isOtpVerifyLoading => _otpVerifyLoading;
+  bool _waOtpVerifyLoading = false;
+  bool get isWaOtpVerifyLoading => _waOtpVerifyLoading;
 
-  Future<({bool success, String message})> verifyOtpAndLogin({
-    required String email,
+  Future<({bool success, String message, String action})> verifyWhatsAppOtp({
+    required String phone,
     required String otp,
+    String? restaurantName,
   }) async {
-    _otpVerifyLoading = true;
+    _waOtpVerifyLoading = true;
     notifyListeners();
 
     try {
+      final payload = <String, dynamic>{
+        'phone': phone.trim(),
+        'otp': otp.trim(),
+      };
+      if (restaurantName != null && restaurantName.trim().isNotEmpty) {
+        payload['name'] = restaurantName.trim();
+      }
+
       final response = await _apiService.post(
-        ApiEndpoints.otpLogin,
-        data: {'email': email.trim(), 'otp': otp.trim()},
+        ApiEndpoints.vendorWaOtpVerify,
+        data: payload,
       );
 
-      AppLogger.i('OTP LOGIN SUCCESS — HTTP ${response.statusCode}');
+      AppLogger.i('WA OTP VERIFY — HTTP ${response.statusCode}');
 
       final body = response.data as Map<String, dynamic>;
+      final action = body['action'] as String? ?? 'login';
+
+      _waOtpVerifyLoading = false;
+
+      // New vendor needs to provide restaurant name — not a login yet
+      if (action == 'register_required') {
+        notifyListeners();
+        return (success: true, message: body['message']?.toString() ?? '', action: action);
+      }
+
+      // Existing vendor login or new vendor just registered
       final tokens = body['tokens'] as Map<String, dynamic>;
       final user = body['user'] as Map<String, dynamic>;
+      final displayName = (user['name'] as String?)?.trim() ?? '';
 
       await _storageService.saveTokens(
         accessToken: tokens['access'] as String,
@@ -431,42 +209,38 @@ class AuthViewModel extends ChangeNotifier {
       );
       await _storageService.saveUserInfo(
         userId: (user['id'] as num).toInt(),
-        username: user['username'] as String,
-        userType: user['user_type'] as String,
+        username: displayName.isNotEmpty ? displayName : phone.trim(),
+        userType: user['user_type'] as String? ?? 'vendor',
       );
 
-      // Invalidate any in-flight 401 handlers from a previous session so they
-      // don't consume the new refresh token or navigate back to login.
       _apiService.incrementLoginGeneration();
       _apiService.resetLoggingOut();
 
-      _username = user['username'] as String;
+      _username = displayName.isNotEmpty ? displayName : phone.trim();
       _status = AuthStatus.authenticated;
-      _otpVerifyLoading = false;
       notifyListeners();
 
-      // Register FCM token with backend (non-blocking)
       _pushService.initialize().catchError((e) {
-        AppLogger.e('FCM init after OTP login failed: $e');
+        AppLogger.e('FCM init after WA OTP login failed: $e');
       });
 
-      return (success: true, message: 'Login successful.');
+      return (success: true, message: 'Login successful.', action: action);
     } on DioException catch (e) {
-      AppLogger.e('OTP LOGIN FAILED — ${e.response?.statusCode}');
+      AppLogger.e('WA OTP VERIFY FAILED — ${e.response?.statusCode}');
 
-      _otpVerifyLoading = false;
+      _waOtpVerifyLoading = false;
       notifyListeners();
 
-      return (success: false, message: _parseOtpError(e));
+      return (success: false, message: _parseWaOtpError(e), action: '');
     } catch (e) {
-      AppLogger.e('OTP LOGIN UNEXPECTED: $e');
-      _otpVerifyLoading = false;
+      AppLogger.e('WA OTP VERIFY UNEXPECTED: $e');
+      _waOtpVerifyLoading = false;
       notifyListeners();
-      return (success: false, message: 'Unexpected error. Please try again.');
+      return (success: false, message: 'Unexpected error. Please try again.', action: '');
     }
   }
 
-  String _parseOtpError(DioException e) {
+  String _parseWaOtpError(DioException e) {
     if (e.response == null) return 'Network error. Please check your connection.';
     final data = e.response!.data;
     if (data is Map<String, dynamic>) {
@@ -475,13 +249,13 @@ class AuthViewModel extends ChangeNotifier {
     }
     switch (e.response!.statusCode) {
       case 400:
-        return 'Invalid OTP or email address.';
+        return 'Invalid OTP or phone number.';
       case 404:
-        return 'No vendor account found with this email address.';
+        return 'No account found with this number.';
       case 429:
         return 'Too many attempts. Please wait a few minutes.';
-      case 500:
-        return 'Server error. Please try again later.';
+      case 503:
+        return 'WhatsApp service unavailable. Please try again.';
       default:
         return 'OTP verification failed. Please try again.';
     }
@@ -497,57 +271,13 @@ class AuthViewModel extends ChangeNotifier {
   }
 
   // ----------------------------------------------------------------
-  // Parse DioException → human-readable message (login-specific fallbacks)
-  // ----------------------------------------------------------------
-  String _parseDioError(DioException e) {
-    if (e.response == null) {
-      switch (e.type) {
-        case DioExceptionType.connectionTimeout:
-        case DioExceptionType.sendTimeout:
-        case DioExceptionType.receiveTimeout:
-          return 'Connection timed out. Please check your internet.';
-        case DioExceptionType.connectionError:
-          return 'Cannot reach server. Please check your internet connection.';
-        default:
-          return 'Network error. Please check your connection.';
-      }
-    }
-
-    final statusCode = e.response!.statusCode;
-
-    // 401: always show a friendly credentials message regardless of body.
-    if (statusCode == 401) {
-      return 'Incorrect email or password. Please try again.';
-    }
-
-    final data = e.response!.data;
-    if (data is Map<String, dynamic>) {
-      final msg = _parseErrorBody(data);
-      if (msg != null) return msg;
-    }
-
-    switch (statusCode) {
-      case 400:
-        return 'Incorrect email or password. Please try again.';
-      case 403:
-        return 'Access denied. This account may not have vendor access.';
-      case 429:
-        return 'Too many login attempts. Please wait a few minutes.';
-      case 500:
-        return 'Server error. Please try again later.';
-      default:
-        return 'Login failed (error $statusCode). Please try again.';
-    }
-  }
-
-  // ----------------------------------------------------------------
   // Shared body parser — extracts the first human-readable message from
   // any Django REST Framework error response shape:
   //   { "message": "..." }
   //   { "error": { "details": {...}, "message": "..." } }
   //   { "errors": { "error": "...", "non_field_errors": [...] } }
   //   { "non_field_errors": ["..."] }
-  //   { "otp"/"email": ["..."] }
+  //   { "otp"/"phone": ["..."] }
   //   { "detail": "..." }
   // Returns null if nothing recognised — caller falls back to status code.
   // ----------------------------------------------------------------
@@ -598,8 +328,8 @@ class AuthViewModel extends ChangeNotifier {
       return (nfe is List && nfe.isNotEmpty) ? nfe.first.toString() : nfe.toString();
     }
 
-    // Field-level list errors — otp, email
-    for (final key in ['otp', 'email']) {
+    // Field-level list errors — otp, phone
+    for (final key in ['otp', 'phone']) {
       if (data.containsKey(key)) {
         final val = data[key];
         if (val is List && val.isNotEmpty) return val.first.toString();
@@ -614,7 +344,7 @@ class AuthViewModel extends ChangeNotifier {
 
   /// Recursively extracts the first human-readable string from a
   /// Django REST Framework error map.
-  ///   { "error": ["Invalid password"] }  →  "Invalid password"
+  ///   { "error": ["Invalid OTP"] }  →  "Invalid OTP"
   ///   { "details": { "error": ["..."] } }  →  "..."
   static String? _extractFirstString(Map<String, dynamic> map) {
     for (final value in map.values) {

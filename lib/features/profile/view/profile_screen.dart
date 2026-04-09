@@ -14,7 +14,6 @@ import '../widgets/menu_card.dart';
 import '../widgets/profile_header_card.dart';
 import '../widgets/section_header.dart';
 import 'bank_account_screen.dart';
-import 'change_password_screen.dart';
 import 'view_profile_screen.dart';
 import 'operating_hours_screen.dart';
 import '../../earnings/view/earnings_screen.dart';
@@ -483,16 +482,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         const SizedBox(height: 10),
         MenuCard(
           items: [
-            MenuItem(
-              icon: Icons.lock_rounded,
-              iconColor: AppColors.error,
-              title: AppStrings.changePassword,
-              subtitle: 'Update your password',
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ChangePasswordScreen()),
-              ),
-            ),
             MenuItem(
               icon: Icons.notifications_rounded,
               iconColor: AppColors.orange,

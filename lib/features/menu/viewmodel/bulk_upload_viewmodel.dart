@@ -90,6 +90,9 @@ class BulkUploadViewModel extends ChangeNotifier {
   }
 
   // ── Pick CSV file ─────────────────────────────────────────────────
+  /// Max allowed file size: 5 MB.
+  static const int _maxFileSizeBytes = 5 * 1024 * 1024;
+
   Future<void> pickFile() async {
     try {
       final result = await FilePicker.pickFiles(
@@ -101,8 +104,20 @@ class BulkUploadViewModel extends ChangeNotifier {
       if (result == null || result.files.isEmpty) return;
 
       final file = result.files.first;
+
       if (file.path == null) {
         _errorMessage = 'Could not access the selected file.';
+        _notify();
+        return;
+      }
+
+      // ── 5 MB size guard ──────────────────────────────────────────
+      final size = file.size;
+      if (size > _maxFileSizeBytes) {
+        final sizeMb = (size / (1024 * 1024)).toStringAsFixed(1);
+        _errorMessage =
+            'File is too large ($sizeMb MB). Maximum allowed size is 5 MB.';
+        _selectedFile = null;
         _notify();
         return;
       }
