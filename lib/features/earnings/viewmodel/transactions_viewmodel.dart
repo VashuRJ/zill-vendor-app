@@ -96,28 +96,6 @@ class UnifiedTransaction {
 
   // ── Factories — from backend JSON ──────────────────────────────────
 
-  /// Build from a recent order earning (from `/payments/vendor/earnings/`).
-  factory UnifiedTransaction.fromOrderEarning(RecentOrderEarning o) {
-    DateTime parsedDate;
-    try {
-      parsedDate = DateTime.parse(o.createdAt).toLocal();
-    } catch (_) {
-      parsedDate = DateTime.now();
-    }
-
-    return UnifiedTransaction(
-      id: 'ORD_${o.orderNumber}',
-      type: TransactionType.orderEarning,
-      amount: o.grossAmount,
-      netAmount: o.netAmount,
-      status: 'success',
-      date: parsedDate,
-      description: 'Order #${o.orderNumber}',
-      referenceId: o.orderNumber,
-      meta: {'subtotal': o.subtotal, 'commission': o.commission, 'gst': o.gst},
-    );
-  }
-
   /// Build from a payout record (from `/payments/vendor/payouts/`).
   factory UnifiedTransaction.fromPayout(Payout p) {
     DateTime parsedDate;
@@ -297,20 +275,40 @@ class TransactionsViewModel extends ChangeNotifier {
 
       final List<UnifiedTransaction> combined = [];
 
-      // ── Parse order earnings ─────────────────────────────────────
+      // ── Parse weekly settlements (payout_history in new earnings shape) ──
       if (results[0] is Response) {
         try {
           final body = (results[0] as Response).data as Map<String, dynamic>;
-          final rawOrders = (body['recent_orders'] as List<dynamic>?) ?? [];
-          for (final o in rawOrders) {
-            combined.add(
-              UnifiedTransaction.fromOrderEarning(
-                RecentOrderEarning.fromJson(o as Map<String, dynamic>),
-              ),
-            );
+          final history = (body['payout_history'] as List<dynamic>?) ?? [];
+          for (final h in history) {
+            final m = h as Map<String, dynamic>;
+            DateTime parsedDate;
+            try {
+              parsedDate = DateTime.parse(
+                m['paid_on']?.toString() ??
+                    m['period_end']?.toString() ??
+                    DateTime.now().toIso8601String(),
+              ).toLocal();
+            } catch (_) {
+              parsedDate = DateTime.now();
+            }
+            final amt = (m['amount'] is num)
+                ? (m['amount'] as num).toDouble()
+                : double.tryParse(m['amount']?.toString() ?? '') ?? 0.0;
+            combined.add(UnifiedTransaction(
+              id: m['settlement_id']?.toString() ?? '',
+              type: TransactionType.settlement,
+              amount: amt,
+              netAmount: amt,
+              status: m['status']?.toString() ?? 'pending',
+              date: parsedDate,
+              description: 'Weekly Payout (${m['period'] ?? ''})',
+              referenceId: m['settlement_id']?.toString() ?? '',
+              meta: {'utr': m['utr'] ?? ''},
+            ));
           }
         } catch (e) {
-          debugPrint('[TransactionsVM] parse orders: $e');
+          debugPrint('[TransactionsVM] parse payout_history: $e');
         }
       }
 

@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -90,6 +91,23 @@ class WebSocketService {
     _orderTrackingController.close();
   }
 
+  // ── Internal: build a properly-formed wss:// Uri ───────────────────────
+  // Constructs the Uri via the named-parameter constructor instead of
+  // `Uri.parse` so the scheme/host/port are unambiguous. This sidesteps a
+  // long-standing dart:io quirk where `IOWebSocketChannel.connect(String)`
+  // round-trips through Uri and emits the upgrade request as
+  // `https://host:0/...` — which servers reject with HTTP 400.
+  Uri _buildWsUri(String path, String token) {
+    final base = Uri.parse(ApiEndpoints.wsBaseUrl);
+    return Uri(
+      scheme: base.scheme,           // ws / wss
+      host: base.host,
+      port: base.hasPort ? base.port : null,
+      path: path,
+      queryParameters: {'token': token},
+    );
+  }
+
   // ── Internal: connect with auto-reconnect ──────────────────────────────
   Future<void> _connect({
     required String path,
@@ -105,12 +123,25 @@ class WebSocketService {
       return;
     }
 
-    // Use IOWebSocketChannel to avoid Dart Uri mangling wss:// → https://:0
-    final wsUrl = '${ApiEndpoints.wsBaseUrl}$path?token=$token';
-    AppLogger.i('[WS] Connecting $key → ${ApiEndpoints.wsBaseUrl}$path');
+    // Build the URI explicitly — string-based parsing has historically
+    // mangled wss:// URLs in dart:io (resulting in `https://host:0/...`
+    // upgrade requests that the server rejects with HTTP 400).
+    final Uri wsUri = _buildWsUri(path, token);
+    AppLogger.i('[WS] Connecting $key → ${wsUri.scheme}://${wsUri.host}${wsUri.path}');
 
     try {
-      final channel = IOWebSocketChannel.connect(wsUrl);
+      // Use IOWebSocketChannel.connect(Uri) — the Uri overload bypasses
+      // the buggy String → Uri conversion path, and we attach the JWT
+      // both as a query param (current backend contract) and as an
+      // Authorization header so future header-aware backends Just Work.
+      final channel = IOWebSocketChannel.connect(
+        wsUri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'User-Agent': 'ZillVendorApp/Flutter',
+        },
+        pingInterval: const Duration(seconds: 25),
+      );
       // Wait for the connection to be established
       await channel.ready;
 
@@ -127,6 +158,9 @@ class WebSocketService {
         (raw) {
           try {
             final data = jsonDecode(raw as String) as Map<String, dynamic>;
+            // Swallow server pong frames — they exist only to keep the
+            // socket alive and shouldn't be propagated to listeners.
+            if (data['type'] == 'pong') return;
             onMessage(data);
           } catch (e) {
             AppLogger.w('[WS] Failed to parse message on $key: $e');
@@ -143,6 +177,7 @@ class WebSocketService {
         cancelOnError: false,
       );
 
+      _startHeartbeat(conn);
       AppLogger.i('[WS] Connected $key');
     } catch (e) {
       AppLogger.e('[WS] Failed to connect $key: $e');
@@ -154,13 +189,30 @@ class WebSocketService {
     final conn = _connections.remove(key);
     if (conn == null) return;
     conn.reconnectTimer?.cancel();
+    conn.heartbeatTimer?.cancel();
     conn.subscription?.cancel();
     conn.channel?.sink.close();
     AppLogger.i('[WS] Disconnected $key');
   }
 
+  // ── Heartbeat: send {"type":"ping"} every 30s to keep the socket alive
+  // and detect dead connections (Django Channels closes idle sockets).
+  static const _heartbeatInterval = Duration(seconds: 30);
+
+  void _startHeartbeat(_WsConnection conn) {
+    conn.heartbeatTimer?.cancel();
+    conn.heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      final ch = conn.channel;
+      if (ch == null) return;
+      try {
+        ch.sink.add(jsonEncode({'type': 'ping'}));
+      } catch (e) {
+        AppLogger.w('[WS] Heartbeat send failed on ${conn.key}: $e');
+      }
+    });
+  }
+
   static const _maxReconnectAttempts = 10;
-  static const _baseReconnectDelay = Duration(seconds: 3);
 
   void _scheduleReconnect(
     String key,
@@ -172,6 +224,8 @@ class WebSocketService {
     if (existing == null) return;
     // Don't stack multiple reconnect timers
     if (existing.reconnectTimer?.isActive == true) return;
+    // Stop heartbeating a dead socket — it'll restart on successful reconnect.
+    existing.heartbeatTimer?.cancel();
     // Give up after max attempts to avoid infinite loop when offline
     if (existing.reconnectAttempts >= _maxReconnectAttempts) {
       AppLogger.w('[WS] Max reconnect attempts reached for $key — giving up');
@@ -180,12 +234,9 @@ class WebSocketService {
     }
 
     existing.reconnectAttempts++;
-    // Exponential backoff: 3s, 6s, 12s, 24s ... capped at 60s
-    final delay = Duration(
-      seconds: (_baseReconnectDelay.inSeconds *
-              (1 << (existing.reconnectAttempts - 1)))
-          .clamp(3, 60),
-    );
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s ... capped at 30s.
+    final secs = math.min(30, math.pow(2, existing.reconnectAttempts - 1).toInt());
+    final delay = Duration(seconds: secs);
     AppLogger.i('[WS] Reconnecting $key in ${delay.inSeconds}s '
         '(attempt ${existing.reconnectAttempts}/$_maxReconnectAttempts)');
 
@@ -203,6 +254,7 @@ class _WsConnection {
   WebSocketChannel? channel;
   StreamSubscription? subscription;
   Timer? reconnectTimer;
+  Timer? heartbeatTimer;
   final String path;
   final String key;
   final void Function(Map<String, dynamic>) onMessage;

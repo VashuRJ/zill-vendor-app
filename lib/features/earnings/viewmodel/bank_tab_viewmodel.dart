@@ -182,11 +182,21 @@ class BankTabViewModel extends ChangeNotifier {
       case 'This Month':
         return _periodStats['month'] ?? const PeriodStats(total: 0, count: 0);
       default:
-        // Custom range — fall back to client-side filtering
-        final orders = filteredRecentOrders;
+        // Custom range — fall back to client-side filtering of recent
+        // transactions (payments/vendor/earnings/ no longer ships per-order
+        // detail, so we use the /vendors/earnings/ recent_transactions list).
+        final txs = _vendorRecentTransactions.where((t) {
+          try {
+            final dt = DateTime.parse(t.date).toLocal();
+            final r = activeDateRange;
+            return !dt.isBefore(r.start) && dt.isBefore(r.end);
+          } catch (_) {
+            return false;
+          }
+        }).toList();
         return PeriodStats(
-          total: orders.fold(0.0, (sum, o) => sum + o.netAmount),
-          count: orders.length,
+          total: txs.fold(0.0, (sum, t) => sum + t.amount),
+          count: txs.length,
         );
     }
   }
@@ -195,12 +205,24 @@ class BankTabViewModel extends ChangeNotifier {
   bool get isInitialLoading => _status == BankTabStatus.fetching;
   bool get hasSummary => _summary != null;
   bool get hasBank => _bankData != null;
-  bool get bankVerified => _bankData?.isVerified ?? false;
-  bool get canRequestPayout =>
-      hasBank &&
-      bankVerified &&
-      _summary != null &&
-      _summary!.wallet.availableBalance > 0;
+
+  /// Bank verified state — prefer the authoritative `payout_info.bank_status`
+  /// from the new earnings response; fall back to local bank model when the
+  /// summary hasn't loaded yet.
+  bool get bankVerified {
+    final s = _summary?.payoutInfo.bankStatus;
+    if (s != null && s != BankStatus.unknown) {
+      return s == BankStatus.verified;
+    }
+    return _bankData?.isVerified ?? false;
+  }
+
+  /// Convenience accessors for the auto-payout flow.
+  ThisWeekEarnings? get thisWeek => _summary?.thisWeek;
+  PayoutInfo? get payoutInfo => _summary?.payoutInfo;
+  LifetimeEarnings? get lifetime => _summary?.lifetime;
+  List<PayoutHistoryEntry> get payoutHistory =>
+      _summary?.payoutHistory ?? const [];
 
   // ── Time filter ────────────────────────────────────────────────────
   void setFilter(String filter, {DateTimeRange? customRange}) {
@@ -239,20 +261,6 @@ class BankTabViewModel extends ChangeNotifier {
           end: today.add(const Duration(days: 1)),
         );
     }
-  }
-
-  /// Recent orders filtered by the active date range.
-  List<RecentOrderEarning> get filteredRecentOrders {
-    final range = activeDateRange;
-    return (_summary?.recentOrders ?? []).where((o) {
-      if (o.createdAt.isEmpty) return false;
-      try {
-        final dt = DateTime.parse(o.createdAt).toLocal();
-        return !dt.isBefore(range.start) && dt.isBefore(range.end);
-      } catch (_) {
-        return false;
-      }
-    }).toList();
   }
 
   // ── Initial load — 5 parallel calls ─────────────────────────────────

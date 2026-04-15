@@ -6,7 +6,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
 import '../../../core/services/api_service.dart';
 import '../../earnings/viewmodel/earnings_viewmodel.dart'
-    show EarningsCommission, EarningsSettlement, EarningsWallet, Payout;
+    show LifetimeEarnings, Payout, PayoutInfo, ThisWeekEarnings;
 import '../viewmodel/bank_account_viewmodel.dart';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -131,9 +131,9 @@ class _BankAccountViewState extends State<_BankAccountView> {
     } else if (vm.hasBank && !_isEditing) {
       body = _DetailsView(
         data: vm.bankData!,
-        wallet: vm.wallet,
-        commission: vm.commission,
-        settlement: vm.settlement,
+        thisWeek: vm.thisWeek,
+        payoutInfo: vm.payoutInfo,
+        lifetime: vm.lifetime,
         payouts: vm.payouts,
         onUpdate: () => setState(() => _isEditing = true),
       );
@@ -305,16 +305,16 @@ class _DetailsView extends StatelessWidget {
   const _DetailsView({
     required this.data,
     required this.onUpdate,
-    this.wallet,
-    this.commission,
-    this.settlement,
+    this.thisWeek,
+    this.payoutInfo,
+    this.lifetime,
     this.payouts = const [],
   });
 
   final BankAccountData data;
-  final EarningsWallet? wallet;
-  final EarningsCommission? commission;
-  final EarningsSettlement? settlement;
+  final ThisWeekEarnings? thisWeek;
+  final PayoutInfo? payoutInfo;
+  final LifetimeEarnings? lifetime;
   final List<Payout> payouts;
   final VoidCallback onUpdate;
 
@@ -333,33 +333,33 @@ class _DetailsView extends StatelessWidget {
           // ── Premium bank card ────────────────────────────────────────
           _BankCard(data: data),
 
-          // ── Balance summary (from earnings API) ─────────────────────
-          if (wallet != null) ...[
+          // ── This-week earnings summary (from new earnings API) ─────
+          if (thisWeek != null) ...[
             const SizedBox(height: 24),
             _SectionHeader(
               icon: Icons.account_balance_wallet_rounded,
               iconColor: AppColors.success,
               iconBg: AppColors.success.withAlpha(20),
-              title: 'Balance Summary',
+              title: 'This Week',
             ),
             const SizedBox(height: 10),
-            _BalanceSummaryCard(wallet: wallet!),
+            _ThisWeekMiniCard(
+              thisWeek: thisWeek!,
+              lifetime: lifetime,
+            ),
           ],
 
-          // ── Commission & Settlement Details ───────────────────────────
-          if (commission != null || settlement != null) ...[
+          // ── Auto-payout schedule info ───────────────────────────────
+          if (payoutInfo != null) ...[
             const SizedBox(height: 24),
             _SectionHeader(
-              icon: Icons.receipt_long_rounded,
+              icon: Icons.event_available_rounded,
               iconColor: const Color(0xFF6C5CE7),
               iconBg: const Color(0xFF6C5CE7).withAlpha(20),
-              title: 'Commission & Settlement',
+              title: 'Payout Schedule',
             ),
             const SizedBox(height: 10),
-            _CommissionSettlementCard(
-              commission: commission,
-              settlement: settlement,
-            ),
+            _PayoutScheduleCard(payoutInfo: payoutInfo!),
           ],
 
           const SizedBox(height: 24),
@@ -500,6 +500,17 @@ class _DetailsView extends StatelessWidget {
 
   String _capitalize(String s) =>
       s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
+}
+
+/// Formats a masked account number like "XXXX1234" → "XXXX 1234" for
+/// readability. Falls back to the em-dash if the value is empty.
+String _formatMasked(String masked) {
+  if (masked.isEmpty) return '\u2014';
+  if (masked.length <= 4) return masked;
+  final tail = masked.substring(masked.length - 4);
+  final head = masked.substring(0, masked.length - 4);
+  return '$head $tail';
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -628,155 +639,6 @@ class _BankCard extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────
 //  Balance summary card
 // ─────────────────────────────────────────────────────────────────────
-class _BalanceSummaryCard extends StatelessWidget {
-  const _BalanceSummaryCard({required this.wallet});
-  final EarningsWallet wallet;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSizes.md),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.shadow,
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // Top row — Available + Pending
-          Row(
-            children: [
-              Expanded(
-                child: _BalanceTile(
-                  icon: Icons.account_balance_wallet_rounded,
-                  iconColor: AppColors.success,
-                  label: 'Available',
-                  amount: wallet.availableBalance,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _BalanceTile(
-                  icon: Icons.schedule_rounded,
-                  iconColor: AppColors.warning,
-                  label: 'Pending',
-                  amount: wallet.pendingSettlement,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Bottom row — Gross + Held
-          Row(
-            children: [
-              Expanded(
-                child: _BalanceTile(
-                  icon: Icons.trending_up_rounded,
-                  iconColor: AppColors.info,
-                  label: 'Gross Earnings',
-                  amount: wallet.grossBalance,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _BalanceTile(
-                  icon: Icons.lock_rounded,
-                  iconColor: AppColors.error,
-                  label: 'Held',
-                  amount: wallet.heldBalance,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _BalanceTile extends StatelessWidget {
-  const _BalanceTile({
-    required this.icon,
-    required this.iconColor,
-    required this.label,
-    required this.amount,
-  });
-
-  final IconData icon;
-  final Color iconColor;
-  final String label;
-  final double amount;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: iconColor.withAlpha(10),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 26,
-                height: 26,
-                decoration: BoxDecoration(
-                  color: iconColor.withAlpha(25),
-                  borderRadius: BorderRadius.circular(7),
-                ),
-                child: Icon(icon, size: 14, color: iconColor),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textHint,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '\u20B9${amount.toStringAsFixed(2)}',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: iconColor == AppColors.error && amount > 0
-                  ? AppColors.error
-                  : AppColors.textPrimary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-String _formatMasked(String masked) {
-  if (masked.isEmpty) return '\u2022\u2022\u2022\u2022  \u2022\u2022\u2022\u2022  \u2022\u2022\u2022\u2022';
-  final display = masked.replaceAll(RegExp(r'[Xx*]'), '\u2022');
-  final chunks = <String>[];
-  for (var i = 0; i < display.length; i += 4) {
-    final end = (i + 4).clamp(0, display.length);
-    chunks.add(display.substring(i, end));
-  }
-  return chunks.join('  ');
-}
-
 class _Circle extends StatelessWidget {
   const _Circle({required this.size, required this.color});
   final double size;
@@ -868,6 +730,285 @@ class _CardSubLabel extends StatelessWidget {
       ],
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  This-week mini-card (compact summary on the bank screen)
+// ─────────────────────────────────────────────────────────────────────
+class _ThisWeekMiniCard extends StatelessWidget {
+  const _ThisWeekMiniCard({required this.thisWeek, this.lifetime});
+
+  final ThisWeekEarnings thisWeek;
+  final LifetimeEarnings? lifetime;
+
+  String _money(double v) {
+    if (v >= 100000) return '\u20B9${(v / 100000).toStringAsFixed(1)}L';
+    if (v >= 1000) return '\u20B9${(v / 1000).toStringAsFixed(1)}K';
+    return '\u20B9${v.toStringAsFixed(0)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSizes.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.shadow,
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (thisWeek.periodLabel.isNotEmpty)
+            Text(
+              thisWeek.periodLabel,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textHint,
+                letterSpacing: 0.4,
+              ),
+            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _miniStat(
+                  label: 'NET EARNED',
+                  value: _money(thisWeek.netEarnings),
+                  color: AppColors.success,
+                  icon: Icons.payments_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _miniStat(
+                  label: 'ORDERS',
+                  value: '${thisWeek.totalOrders}',
+                  color: AppColors.info,
+                  icon: Icons.shopping_bag_rounded,
+                ),
+              ),
+            ],
+          ),
+          if (lifetime != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _miniStat(
+                    label: 'LIFETIME EARNED',
+                    value: _money(lifetime!.totalEarned),
+                    color: AppColors.primary,
+                    icon: Icons.workspace_premium_rounded,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _miniStat(
+                    label: 'LIFETIME PAID',
+                    value: _money(lifetime!.totalPaidOut),
+                    color: const Color(0xFF6C5CE7),
+                    icon: Icons.account_balance_rounded,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _miniStat({
+    required String label,
+    required String value,
+    required Color color,
+    required IconData icon,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withAlpha(15),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: color, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Payout schedule card (auto-payout flow)
+// ─────────────────────────────────────────────────────────────────────
+class _PayoutScheduleCard extends StatelessWidget {
+  const _PayoutScheduleCard({required this.payoutInfo});
+
+  final PayoutInfo payoutInfo;
+
+  String _money(double v) =>
+      '\u20B9${v.toStringAsFixed(v.truncateToDouble() == v ? 0 : 2)}';
+
+  @override
+  Widget build(BuildContext context) {
+    final d = payoutInfo.nextPayoutDate;
+    final dateStr = d != null
+        ? '${d.day.toString().padLeft(2, '0')} ${_month(d.month)} ${d.year}'
+        : payoutInfo.payoutSchedule;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSizes.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.shadow,
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _scheduleRow(
+            icon: Icons.calendar_month_rounded,
+            color: AppColors.primary,
+            label: 'Schedule',
+            value: payoutInfo.payoutSchedule,
+          ),
+          const Divider(height: 18, color: AppColors.borderLight),
+          _scheduleRow(
+            icon: Icons.event_available_rounded,
+            color: AppColors.success,
+            label: 'Next payout',
+            value: dateStr,
+          ),
+          const Divider(height: 18, color: AppColors.borderLight),
+          _scheduleRow(
+            icon: Icons.savings_rounded,
+            color: AppColors.info,
+            label: 'Estimated amount',
+            value: _money(payoutInfo.estimatedAmount),
+          ),
+          const Divider(height: 18, color: AppColors.borderLight),
+          _scheduleRow(
+            icon: Icons.linear_scale_rounded,
+            color: AppColors.warning,
+            label: 'Minimum payout',
+            value: _money(payoutInfo.minimumPayout),
+          ),
+          if (payoutInfo.hasCarryForward) ...[
+            const Divider(height: 18, color: AppColors.borderLight),
+            _scheduleRow(
+              icon: Icons.history_rounded,
+              color: const Color(0xFF6C5CE7),
+              label: 'Carry forward',
+              value: _money(payoutInfo.carryForwardAmount),
+            ),
+          ],
+          if (payoutInfo.message.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                payoutInfo.message,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _scheduleRow({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required String value,
+  }) {
+    return Row(
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: color.withAlpha(20),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: color, size: 16),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  String _month(int m) => _months[(m - 1).clamp(0, 11)];
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1148,150 +1289,6 @@ class _DetailRow extends StatelessWidget {
 
 // ─────────────────────────────────────────────────────────────────────
 //  Commission & Settlement Details card
-// ─────────────────────────────────────────────────────────────────────
-class _CommissionSettlementCard extends StatelessWidget {
-  const _CommissionSettlementCard({this.commission, this.settlement});
-  final EarningsCommission? commission;
-  final EarningsSettlement? settlement;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSizes.md),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
-        boxShadow: const [
-          BoxShadow(
-            color: AppColors.shadowLight,
-            blurRadius: 10,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: _CommissionTile(
-                  icon: Icons.percent_rounded,
-                  iconColor: const Color(0xFF6C5CE7),
-                  label: 'Commission Rate',
-                  value: commission?.rateDisplay.isNotEmpty == true
-                      ? commission!.rateDisplay
-                      : '${commission?.rate.toStringAsFixed(0) ?? '—'}%',
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _CommissionTile(
-                  icon: Icons.receipt_rounded,
-                  iconColor: AppColors.warning,
-                  label: 'GST on Commission',
-                  value: commission?.gstRate.isNotEmpty == true
-                      ? '${commission!.gstRate}%'
-                      : '—',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _CommissionTile(
-                  icon: Icons.calendar_month_rounded,
-                  iconColor: AppColors.info,
-                  label: 'Settlement Cycle',
-                  value: settlement?.cycleDisplay ?? '—',
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _CommissionTile(
-                  icon: Icons.currency_rupee_rounded,
-                  iconColor: AppColors.success,
-                  label: 'Minimum Payout',
-                  value: settlement != null
-                      ? '\u20B9${settlement!.minAmount.toStringAsFixed(0)}'
-                      : '—',
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CommissionTile extends StatelessWidget {
-  const _CommissionTile({
-    required this.icon,
-    required this.iconColor,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final Color iconColor;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: iconColor.withAlpha(10),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 26,
-                height: 26,
-                decoration: BoxDecoration(
-                  color: iconColor.withAlpha(25),
-                  borderRadius: BorderRadius.circular(7),
-                ),
-                child: Icon(icon, size: 14, color: iconColor),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textHint,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textPrimary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  Recent Payouts card
 // ─────────────────────────────────────────────────────────────────────
 class _RecentPayoutsCard extends StatelessWidget {
   const _RecentPayoutsCard({required this.payouts});

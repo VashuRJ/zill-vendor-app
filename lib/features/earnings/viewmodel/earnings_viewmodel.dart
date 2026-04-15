@@ -1,119 +1,287 @@
+// ─────────────────────────────────────────
+// Zill Restaurant Partner — Vendor App
+// Author: Vashu Mogha (@Its-vashu)
+// ─────────────────────────────────────────
+//
+//  Models for the auto-payout earnings flow.
+//  Backend: GET /api/payments/vendor/earnings/
+//  (this_week + payout_info + lifetime + payout_history)
+//
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/services/api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────
-//  Models — keys match the Django response exactly
+//  Shared helper — safe Decimal/double parse
 // ─────────────────────────────────────────────────────────────────────
-
-class EarningsWallet {
-  final double grossBalance;
-  final double availableBalance;
-  final double pendingSettlement;
-  final double heldBalance;
-
-  const EarningsWallet({
-    required this.grossBalance,
-    required this.availableBalance,
-    required this.pendingSettlement,
-    required this.heldBalance,
-  });
-
-  factory EarningsWallet.fromJson(Map<String, dynamic> j) => EarningsWallet(
-    grossBalance: _d(j['gross_balance']),
-    availableBalance: _d(j['available_balance']),
-    pendingSettlement: _d(j['pending_settlement']),
-    heldBalance: _d(j['held_balance']),
-  );
+double _d(dynamic v) {
+  if (v == null) return 0.0;
+  if (v is num) return v.toDouble();
+  return double.tryParse(v.toString()) ?? 0.0;
 }
 
-class EarningsCommission {
-  final double rate;
-  final String rateDisplay;
-  final String gstRate;
-
-  const EarningsCommission({
-    required this.rate,
-    required this.rateDisplay,
-    required this.gstRate,
-  });
-
-  factory EarningsCommission.fromJson(Map<String, dynamic> j) =>
-      EarningsCommission(
-        rate: _d(j['rate']),
-        rateDisplay: j['rate_display']?.toString() ?? '',
-        gstRate: j['gst_rate']?.toString() ?? '',
-      );
-}
-
-class EarningsPending {
-  final int orderCount;
-  final double grossAmount;
-  final double estimatedNet;
-
-  const EarningsPending({
-    required this.orderCount,
-    required this.grossAmount,
-    required this.estimatedNet,
-  });
-
-  factory EarningsPending.fromJson(Map<String, dynamic> j) => EarningsPending(
-    orderCount: (j['order_count'] as num?)?.toInt() ?? 0,
-    grossAmount: _d(j['gross_amount']),
-    estimatedNet: _d(j['estimated_net']),
-  );
-}
-
-class EarningsLifetime {
-  final double grossEarnings;
-  final double totalCommission;
-  final double totalGst;
-  final double totalSettlements;
-
-  const EarningsLifetime({
-    required this.grossEarnings,
-    required this.totalCommission,
-    required this.totalGst,
-    required this.totalSettlements,
-  });
-
-  factory EarningsLifetime.fromJson(Map<String, dynamic> j) => EarningsLifetime(
-    grossEarnings: _d(j['gross_earnings']),
-    totalCommission: _d(j['total_commission']),
-    totalGst: _d(j['total_gst']),
-    totalSettlements: _d(j['total_settlements']),
-  );
-}
-
-class EarningsSettlement {
-  final String cycle;
-  final double minAmount;
-
-  const EarningsSettlement({required this.cycle, required this.minAmount});
-
-  factory EarningsSettlement.fromJson(Map<String, dynamic> j) =>
-      EarningsSettlement(
-        cycle: j['cycle']?.toString() ?? 'weekly',
-        minAmount: _d(j['min_amount']),
-      );
-
-  String get cycleDisplay {
-    switch (cycle) {
-      case 'daily':
-        return 'Daily';
-      case 'weekly':
-        return 'Weekly';
-      case 'biweekly':
-        return 'Bi-weekly';
-      case 'monthly':
-        return 'Monthly';
-      default:
-        return cycle;
-    }
+DateTime? _date(dynamic v) {
+  if (v == null) return null;
+  try {
+    return DateTime.parse(v.toString()).toLocal();
+  } catch (_) {
+    return null;
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  this_week.daily_breakdown[*]
+// ─────────────────────────────────────────────────────────────────────
+class DailyEarning {
+  final DateTime date;
+  final int orders;
+  final double earnings;
+
+  const DailyEarning({
+    required this.date,
+    required this.orders,
+    required this.earnings,
+  });
+
+  factory DailyEarning.fromJson(Map<String, dynamic> j) => DailyEarning(
+        date: _date(j['date']) ?? DateTime.now(),
+        orders: (j['orders'] as num?)?.toInt() ?? 0,
+        earnings: _d(j['earnings']),
+      );
+
+  /// "Mon", "Tue" etc. — used as bar-chart x-axis label.
+  String get shortDay {
+    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return labels[(date.weekday - 1) % 7];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  this_week
+// ─────────────────────────────────────────────────────────────────────
+class ThisWeekEarnings {
+  final String periodLabel;
+  final DateTime? periodStart;
+  final DateTime? periodEnd;
+  final int totalOrders;
+  final double grossEarnings;
+  final double commissionDeducted;
+  final double gstDeducted;
+  final double penalties;
+  final double netEarnings;
+  final List<DailyEarning> dailyBreakdown;
+
+  const ThisWeekEarnings({
+    this.periodLabel = '',
+    this.periodStart,
+    this.periodEnd,
+    this.totalOrders = 0,
+    this.grossEarnings = 0,
+    this.commissionDeducted = 0,
+    this.gstDeducted = 0,
+    this.penalties = 0,
+    this.netEarnings = 0,
+    this.dailyBreakdown = const [],
+  });
+
+  factory ThisWeekEarnings.fromJson(Map<String, dynamic> j) => ThisWeekEarnings(
+        periodLabel: j['period']?.toString() ?? '',
+        periodStart: _date(j['period_start']),
+        periodEnd: _date(j['period_end']),
+        totalOrders: (j['total_orders'] as num?)?.toInt() ?? 0,
+        grossEarnings: _d(j['gross_earnings']),
+        commissionDeducted: _d(j['commission_deducted']),
+        gstDeducted: _d(j['gst_deducted']),
+        penalties: _d(j['penalties']),
+        netEarnings: _d(j['net_earnings']),
+        dailyBreakdown: ((j['daily_breakdown'] as List?) ?? const [])
+            .map((e) => DailyEarning.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  /// True if any day this week had at least one order — used to decide
+  /// whether to render the chart or an empty-state placeholder.
+  bool get hasAnyActivity =>
+      dailyBreakdown.any((d) => d.orders > 0 || d.earnings > 0);
+
+  double get peakDailyEarning =>
+      dailyBreakdown.fold<double>(0, (m, d) => d.earnings > m ? d.earnings : m);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  payout_info
+// ─────────────────────────────────────────────────────────────────────
+enum BankStatus { verified, pendingVerification, notAdded, unknown }
+
+BankStatus _bankStatusFrom(String? raw) {
+  switch (raw) {
+    case 'verified':
+      return BankStatus.verified;
+    case 'pending_verification':
+      return BankStatus.pendingVerification;
+    case 'not_added':
+      return BankStatus.notAdded;
+    default:
+      return BankStatus.unknown;
+  }
+}
+
+class PayoutInfo {
+  final DateTime? nextPayoutDate;
+  final double estimatedAmount;
+  final String bankAccount;
+  final BankStatus bankStatus;
+  final String payoutSchedule;
+  final double minimumPayout;
+  final double carryForwardAmount;
+  final String message;
+
+  const PayoutInfo({
+    this.nextPayoutDate,
+    this.estimatedAmount = 0,
+    this.bankAccount = 'Not added',
+    this.bankStatus = BankStatus.unknown,
+    this.payoutSchedule = 'Every Monday',
+    this.minimumPayout = 0,
+    this.carryForwardAmount = 0,
+    this.message = '',
+  });
+
+  factory PayoutInfo.fromJson(Map<String, dynamic> j) => PayoutInfo(
+        nextPayoutDate: _date(j['next_payout_date']),
+        estimatedAmount: _d(j['estimated_amount']),
+        bankAccount: j['bank_account']?.toString() ?? 'Not added',
+        bankStatus: _bankStatusFrom(j['bank_status']?.toString()),
+        payoutSchedule: j['payout_schedule']?.toString() ?? 'Every Monday',
+        minimumPayout: _d(j['minimum_payout']),
+        carryForwardAmount: _d(j['carry_forward_amount']),
+        message: j['message']?.toString() ?? '',
+      );
+
+  bool get bankReady => bankStatus == BankStatus.verified;
+  bool get hasCarryForward => carryForwardAmount > 0;
+  bool get belowMinPayout =>
+      minimumPayout > 0 && estimatedAmount > 0 && estimatedAmount < minimumPayout;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  lifetime
+// ─────────────────────────────────────────────────────────────────────
+class LifetimeEarnings {
+  final double totalEarned;
+  final double totalPaidOut;
+  final double totalCommission;
+  final double totalGst;
+  final double totalPenalties;
+
+  const LifetimeEarnings({
+    this.totalEarned = 0,
+    this.totalPaidOut = 0,
+    this.totalCommission = 0,
+    this.totalGst = 0,
+    this.totalPenalties = 0,
+  });
+
+  factory LifetimeEarnings.fromJson(Map<String, dynamic> j) => LifetimeEarnings(
+        totalEarned: _d(j['total_earned']),
+        totalPaidOut: _d(j['total_paid_out']),
+        totalCommission: _d(j['total_commission']),
+        totalGst: _d(j['total_gst']),
+        totalPenalties: _d(j['total_penalties']),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  payout_history[*]
+// ─────────────────────────────────────────────────────────────────────
+class PayoutHistoryEntry {
+  final String settlementId;
+  final String periodLabel;
+  final DateTime? periodStart;
+  final DateTime? periodEnd;
+  final double amount;
+  final String status;
+  final String statusDisplay;
+  final String utr;
+  final DateTime? paidOn;
+
+  const PayoutHistoryEntry({
+    required this.settlementId,
+    this.periodLabel = '',
+    this.periodStart,
+    this.periodEnd,
+    this.amount = 0,
+    this.status = 'pending',
+    this.statusDisplay = 'Pending',
+    this.utr = '',
+    this.paidOn,
+  });
+
+  factory PayoutHistoryEntry.fromJson(Map<String, dynamic> j) =>
+      PayoutHistoryEntry(
+        settlementId: j['settlement_id']?.toString() ?? '',
+        periodLabel: j['period']?.toString() ?? '',
+        periodStart: _date(j['period_start']),
+        periodEnd: _date(j['period_end']),
+        amount: _d(j['amount']),
+        status: j['status']?.toString() ?? 'pending',
+        statusDisplay: j['status_display']?.toString() ?? 'Pending',
+        utr: j['utr']?.toString() ?? '',
+        paidOn: _date(j['paid_on']),
+      );
+
+  bool get isPaid => status == 'completed' || status == 'processed';
+  bool get isAwaitingBank => status == 'awaiting_bank_info';
+  bool get isFailed =>
+      const ['failed', 'reversed', 'cancelled'].contains(status);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Aggregate summary — root response
+// ─────────────────────────────────────────────────────────────────────
+class EarningsSummary {
+  final ThisWeekEarnings thisWeek;
+  final PayoutInfo payoutInfo;
+  final LifetimeEarnings lifetime;
+  final List<PayoutHistoryEntry> payoutHistory;
+
+  const EarningsSummary({
+    this.thisWeek = const ThisWeekEarnings(),
+    this.payoutInfo = const PayoutInfo(),
+    this.lifetime = const LifetimeEarnings(),
+    this.payoutHistory = const [],
+  });
+
+  factory EarningsSummary.fromJson(Map<String, dynamic> j) => EarningsSummary(
+        thisWeek: ThisWeekEarnings.fromJson(
+          (j['this_week'] as Map<String, dynamic>?) ?? const {},
+        ),
+        payoutInfo: PayoutInfo.fromJson(
+          (j['payout_info'] as Map<String, dynamic>?) ?? const {},
+        ),
+        lifetime: LifetimeEarnings.fromJson(
+          (j['lifetime'] as Map<String, dynamic>?) ?? const {},
+        ),
+        payoutHistory: ((j['payout_history'] as List?) ?? const [])
+            .map((e) => PayoutHistoryEntry.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  /// Surface awaiting_bank settlements first — vendor must update bank to
+  /// unblock these.
+  PayoutHistoryEntry? get firstAwaitingBank {
+    for (final p in payoutHistory) {
+      if (p.isAwaitingBank) return p;
+    }
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Standalone Payout (from /payments/vendor/payouts/)
+//  Kept here so other ViewModels (transactions_viewmodel) can reuse it.
+// ─────────────────────────────────────────────────────────────────────
 class Payout {
   final String payoutId;
   final double amount;
@@ -159,99 +327,9 @@ class Payout {
       const ['queued', 'pending', 'processing'].contains(status);
 }
 
-class RecentOrderEarning {
-  final String orderNumber;
-  final double subtotal;
-  final double grossAmount;
-  final double commission;
-  final double gst;
-  final double netAmount;
-
-  /// Raw ISO-8601 string — stored as-is for display; never null.
-  final String createdAt;
-
-  const RecentOrderEarning({
-    required this.orderNumber,
-    required this.subtotal,
-    required this.grossAmount,
-    required this.commission,
-    required this.gst,
-    required this.netAmount,
-    required this.createdAt,
-  });
-
-  factory RecentOrderEarning.fromJson(Map<String, dynamic> j) =>
-      RecentOrderEarning(
-        orderNumber: j['order_number']?.toString() ?? '',
-        subtotal: _d(j['subtotal']),
-        grossAmount: _d(j['gross_amount']),
-        commission: _d(j['commission']),
-        gst: _d(j['gst']),
-        netAmount: _d(j['net_amount']),
-        createdAt: j['created_at']?.toString() ?? '',
-      );
-
-  /// True if this order was placed today (UTC).
-  bool get isToday {
-    if (createdAt.isEmpty) return false;
-    try {
-      final dt = DateTime.parse(createdAt).toLocal();
-      final now = DateTime.now();
-      return dt.year == now.year && dt.month == now.month && dt.day == now.day;
-    } catch (_) {
-      return false;
-    }
-  }
-}
-
-class EarningsSummary {
-  final EarningsWallet wallet;
-  final EarningsCommission commission;
-  final EarningsPending pending;
-  final EarningsLifetime lifetime;
-  final EarningsSettlement settlement;
-  final List<RecentOrderEarning> recentOrders;
-
-  const EarningsSummary({
-    required this.wallet,
-    required this.commission,
-    required this.pending,
-    required this.lifetime,
-    required this.settlement,
-    required this.recentOrders,
-  });
-
-  /// Sum of net_amount for orders that are from today.
-  double get todayRevenue => recentOrders
-      .where((o) => o.isToday)
-      .fold(0.0, (sum, o) => sum + o.netAmount);
-
-  factory EarningsSummary.fromJson(Map<String, dynamic> j) => EarningsSummary(
-    wallet: EarningsWallet.fromJson(
-      (j['wallet'] as Map<String, dynamic>?) ?? {},
-    ),
-    commission: EarningsCommission.fromJson(
-      (j['commission'] as Map<String, dynamic>?) ?? {},
-    ),
-    pending: EarningsPending.fromJson(
-      (j['pending'] as Map<String, dynamic>?) ?? {},
-    ),
-    lifetime: EarningsLifetime.fromJson(
-      (j['lifetime'] as Map<String, dynamic>?) ?? {},
-    ),
-    settlement: EarningsSettlement.fromJson(
-      (j['settlement'] as Map<String, dynamic>?) ?? {},
-    ),
-    recentOrders: ((j['recent_orders'] as List<dynamic>?) ?? [])
-        .map((e) => RecentOrderEarning.fromJson(e as Map<String, dynamic>))
-        .toList(),
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────
-//  Settlement history model
+//  Standalone Settlement (from /payments/settlements/history/)
 // ─────────────────────────────────────────────────────────────────────
-
 class Settlement {
   final String settlementId;
   final String period;
@@ -262,13 +340,9 @@ class Settlement {
   final double taxOnCommission;
   final double deductions;
   final double netAmount;
-
-  /// "pending" | "processing" | "completed" | "failed" | "on_hold"
   final String status;
   final String transactionId;
   final String createdAt;
-
-  /// Nullable — null means not yet processed.
   final String? processedAt;
 
   const Settlement({
@@ -288,39 +362,36 @@ class Settlement {
   });
 
   factory Settlement.fromJson(Map<String, dynamic> j) => Settlement(
-    settlementId: j['settlement_id']?.toString() ?? '',
-    period: j['period']?.toString() ?? '',
-    ordersCount: (j['orders_count'] as num?)?.toInt() ?? 0,
-    grossAmount: _d(j['gross_amount']),
-    commissionAmount: _d(j['commission_amount']),
-    commissionRate: _d(j['commission_rate']),
-    taxOnCommission: _d(j['tax_on_commission']),
-    deductions: _d(j['deductions']),
-    netAmount: _d(j['net_amount']),
-    status: j['status']?.toString() ?? 'pending',
-    transactionId: j['transaction_id']?.toString() ?? '',
-    createdAt: j['created_at']?.toString() ?? '',
-    processedAt: j['processed_at']?.toString(),
-  );
+        settlementId: j['settlement_id']?.toString() ?? '',
+        period: j['period']?.toString() ?? '',
+        ordersCount: (j['orders_count'] as num?)?.toInt() ?? 0,
+        grossAmount: _d(j['gross_amount']),
+        commissionAmount: _d(j['commission_amount']),
+        commissionRate: _d(j['commission_rate']),
+        taxOnCommission: _d(j['tax_on_commission']),
+        deductions: _d(j['deductions']),
+        netAmount: _d(j['net_amount']),
+        status: j['status']?.toString() ?? 'pending',
+        transactionId: j['transaction_id']?.toString() ?? '',
+        createdAt: j['created_at']?.toString() ?? '',
+        processedAt: j['processed_at']?.toString(),
+      );
 }
 
 // ─────────────────────────────────────────────────────────────────────
 //  Status enum
 // ─────────────────────────────────────────────────────────────────────
-
 enum EarningsStatus { fetching, idle, error }
 
 // ─────────────────────────────────────────────────────────────────────
-//  ViewModel
+//  ViewModel — used standalone (e.g. transactions screen calls loadAll).
 // ─────────────────────────────────────────────────────────────────────
-
 class EarningsViewModel extends ChangeNotifier {
   final ApiService _apiService;
 
   EarningsViewModel({required ApiService apiService})
-    : _apiService = apiService;
+      : _apiService = apiService;
 
-  // ── State ──────────────────────────────────────────────────────────
   EarningsStatus _status = EarningsStatus.fetching;
   EarningsSummary? _summary;
   List<Settlement> _settlements = [];
@@ -331,7 +402,6 @@ class EarningsViewModel extends ChangeNotifier {
   static const int _perPage = 10;
   bool _hasMore = true;
 
-  // ── Getters ────────────────────────────────────────────────────────
   EarningsStatus get status => _status;
   EarningsSummary? get summary => _summary;
   List<Settlement> get settlements => List.unmodifiable(_settlements);
@@ -341,7 +411,6 @@ class EarningsViewModel extends ChangeNotifier {
   bool get hasMore => _hasMore;
   bool get hasSummary => _summary != null;
 
-  // ── Initial load — fires both requests in parallel ─────────────────
   Future<void> loadAll() async {
     _status = EarningsStatus.fetching;
     _errorMessage = null;
@@ -359,8 +428,9 @@ class EarningsViewModel extends ChangeNotifier {
         ),
       ]);
 
-      final earningsBody = results[0].data as Map<String, dynamic>;
-      _summary = EarningsSummary.fromJson(earningsBody);
+      _summary = EarningsSummary.fromJson(
+        results[0].data as Map<String, dynamic>,
+      );
 
       final historyBody = results[1].data as Map<String, dynamic>;
       _totalSettlements = (historyBody['total'] as num?)?.toInt() ?? 0;
@@ -382,7 +452,6 @@ class EarningsViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Load more settlements (pagination) ────────────────────────────
   Future<void> loadMoreSettlements() async {
     if (_isLoadingMore || !_hasMore) return;
     _isLoadingMore = true;
@@ -405,7 +474,7 @@ class EarningsViewModel extends ChangeNotifier {
       debugPrint(
         '[EarningsViewModel] loadMoreSettlements: ${_parseDioError(e)}',
       );
-      _currentPage--; // roll back so next attempt retries correct page
+      _currentPage--;
     } catch (e) {
       _currentPage--;
       debugPrint('[EarningsViewModel] loadMoreSettlements: $e');
@@ -415,10 +484,8 @@ class EarningsViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Refresh ────────────────────────────────────────────────────────
   Future<void> refresh() => loadAll();
 
-  // ── Helper ─────────────────────────────────────────────────────────
   String _parseDioError(DioException e) {
     final data = e.response?.data;
     if (data is Map) {
@@ -438,13 +505,4 @@ class EarningsViewModel extends ChangeNotifier {
         return 'Network error. Please try again.';
     }
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  Shared helper — safe Decimal/double parse
-// ─────────────────────────────────────────────────────────────────────
-double _d(dynamic v) {
-  if (v == null) return 0.0;
-  if (v is num) return v.toDouble();
-  return double.tryParse(v.toString()) ?? 0.0;
 }

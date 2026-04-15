@@ -9,7 +9,9 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
 import '../../../core/services/api_service.dart';
+import '../../profile/view/bank_account_screen.dart';
 import '../viewmodel/bank_tab_viewmodel.dart';
+import '../viewmodel/earnings_viewmodel.dart';
 import 'transactions_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -46,33 +48,6 @@ class _EarningsDashboardState extends State<_EarningsDashboard> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) context.read<BankTabViewModel>().loadAll();
     });
-  }
-
-  Future<void> _pickCustomRange(BankTabViewModel vm) async {
-    final now = DateTime.now();
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 1),
-      lastDate: now,
-      initialDateRange:
-          vm.customDateRange ??
-          DateTimeRange(
-            start: now.subtract(const Duration(days: 30)),
-            end: now,
-          ),
-      builder: (ctx, child) => Theme(
-        data: Theme.of(ctx).copyWith(
-          colorScheme: Theme.of(ctx).colorScheme.copyWith(
-            primary: AppColors.primary,
-            onPrimary: Colors.white,
-          ),
-        ),
-        child: child!,
-      ),
-    );
-    if (picked != null && mounted) {
-      vm.setFilter('Custom', customRange: picked);
-    }
   }
 
   @override
@@ -121,17 +96,12 @@ class _EarningsDashboardState extends State<_EarningsDashboard> {
   }
 
   Widget _buildContent(BankTabViewModel vm) {
-    final summary = vm.summary;
     final currFmt = NumberFormat.currency(symbol: '\u20B9', decimalDigits: 0);
-    final wallet = summary?.wallet;
-
-    // Use computed totals from /vendors/earnings/ (real-time from DB)
-    final totalEarnings = vm.vendorTotalEarnings;
-    final totalOrders = vm.vendorTotalOrders;
-    final avgOrderValue = vm.vendorAvgOrderValue;
-
-    // Period-filtered stats from server
-    final periodStats = vm.filteredPeriodStats;
+    final thisWeek = vm.thisWeek ?? const ThisWeekEarnings();
+    final payoutInfo = vm.payoutInfo ?? const PayoutInfo();
+    final lifetime = vm.lifetime ?? const LifetimeEarnings();
+    final history = vm.payoutHistory;
+    final awaiting = vm.summary?.firstAwaitingBank;
 
     return RefreshIndicator(
       color: AppColors.primary,
@@ -142,97 +112,47 @@ class _EarningsDashboardState extends State<_EarningsDashboard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── 1. Hero: Total Earnings ──────────────────────────────
-            _HeroCard(
-              totalEarnings: currFmt.format(totalEarnings),
-              subtitle:
-                  'Avg. order value: ${currFmt.format(avgOrderValue)} \u2022 $totalOrders orders',
-              availableBalance: currFmt.format(wallet?.availableBalance ?? 0),
-            ),
+            // ── Red banner: bank not verified / awaiting bank info ──
+            if (!payoutInfo.bankReady) ...[
+              _BankWarningBanner(
+                bankStatus: payoutInfo.bankStatus,
+                onTap: () => _openBankScreen(),
+              ),
+              const SizedBox(height: 14),
+            ] else if (awaiting != null) ...[
+              _AwaitingBankBanner(
+                entry: awaiting,
+                currFmt: currFmt,
+                onTap: () => _openBankScreen(),
+              ),
+              const SizedBox(height: 14),
+            ],
+
+            // ── 1. This Week hero ───────────────────────────────────
+            _ThisWeekHero(thisWeek: thisWeek, currFmt: currFmt),
             const SizedBox(height: 14),
 
-            // ── 2. Withdraw Button ───────────────────────────────────
-            _WithdrawButton(
-              canWithdraw: vm.canRequestPayout,
-              onPressed: () => _showWithdrawSheet(context, vm),
-            ),
+            // ── 2. Next Payout card ─────────────────────────────────
+            _NextPayoutCard(payoutInfo: payoutInfo, currFmt: currFmt),
             const SizedBox(height: 18),
 
-            // ── 3. Time Filters ──────────────────────────────────────
-            _TimeFilterRow(
-              selectedFilter: vm.selectedFilter,
-              customDateRange: vm.customDateRange,
-              onFilterChanged: (f) => vm.setFilter(f),
-              onCustomTapped: () => _pickCustomRange(vm),
-            ),
-            const SizedBox(height: 14),
-
-            // ── 4. Stat Cards (2×2 Grid) ─────────────────────────────
-            Row(
-              children: [
-                Expanded(
-                  child: _StatCardColored(
-                    label: 'TOTAL EARNINGS',
-                    value: currFmt.format(periodStats.total),
-                    icon: Icons.currency_rupee_rounded,
-                    accentColor: AppColors.success,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatCardColored(
-                    label: 'TOTAL ORDERS',
-                    value: '${periodStats.count}',
-                    icon: Icons.shopping_bag_rounded,
-                    accentColor: AppColors.secondary,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _StatCardColored(
-                    label:
-                        'PLATFORM FEE (${summary?.commission.rateDisplay ?? '10%'})',
-                    value: currFmt.format(
-                      periodStats.total *
-                          (summary?.commission.rate ?? 10) /
-                          100,
-                    ),
-                    icon: Icons.percent_rounded,
-                    accentColor: AppColors.primary,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatCardColored(
-                    label: 'NET EARNINGS',
-                    value: currFmt.format(
-                      periodStats.total -
-                          (periodStats.total *
-                              (summary?.commission.rate ?? 10) /
-                              100),
-                    ),
-                    icon: Icons.file_download_outlined,
-                    accentColor: AppColors.info,
-                  ),
-                ),
-              ],
-            ),
+            // ── 3. Daily breakdown bar chart ────────────────────────
+            _DailyBreakdownChart(thisWeek: thisWeek, currFmt: currFmt),
             const SizedBox(height: 18),
 
-            // ── 5. Earnings Trend Chart ──────────────────────────────
-            _EarningsTrendChart(
-              chartData: vm.chartDayData,
-              recentTransactions: vm.vendorRecentTransactions,
-            ),
+            // ── 4. Earnings breakdown (Gross → Net) ─────────────────
+            _BreakdownCard(thisWeek: thisWeek, currFmt: currFmt),
             const SizedBox(height: 18),
 
-            // ── 6. Recent Transactions ───────────────────────────────
-            _RecentTransactions(
-              transactions: vm.vendorRecentTransactions,
+            // ── 5. Carry-forward strip (only if active) ─────────────
+            if (payoutInfo.hasCarryForward) ...[
+              _CarryForwardStrip(payoutInfo: payoutInfo, currFmt: currFmt),
+              const SizedBox(height: 18),
+            ],
+
+            // ── 6. Recent payouts (settlement history) ──────────────
+            _PayoutHistoryList(
+              history: history,
               currFmt: currFmt,
               onViewAll: () {
                 final api = context.read<BankTabViewModel>();
@@ -247,91 +167,98 @@ class _EarningsDashboardState extends State<_EarningsDashboard> {
             ),
             const SizedBox(height: 18),
 
-            // ── 7. Bank Status Card ──────────────────────────────────
-            _BankStatusCard(bankData: vm.bankData, bankLoading: vm.bankLoading),
+            // ── 7. Lifetime stats ───────────────────────────────────
+            _LifetimeCard(lifetime: lifetime, currFmt: currFmt),
+            const SizedBox(height: 18),
+
+            // ── 8. Bank Status Card ─────────────────────────────────
+            _BankStatusCard(
+              bankData: vm.bankData,
+              bankLoading: vm.bankLoading,
+              payoutInfo: payoutInfo,
+              onTap: _openBankScreen,
+            ),
           ],
         ),
       ),
     );
   }
 
-  void _showWithdrawSheet(BuildContext ctx, BankTabViewModel vm) {
-    final wallet = vm.summary?.wallet;
-    if (wallet == null) return;
-    final currFmt = NumberFormat.currency(symbol: '\u20B9', decimalDigits: 0);
+  void _openBankScreen() {
+    final api = context.read<BankTabViewModel>().apiService;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BankAccountScreen(apiService: api),
+      ),
+    ).then((_) {
+      if (mounted) context.read<BankTabViewModel>().refresh();
+    });
+  }
+}
 
-    showModalBottomSheet(
-      context: ctx,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        decoration: const BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        padding: EdgeInsets.fromLTRB(
-          20,
-          16,
-          20,
-          MediaQuery.of(ctx).viewInsets.bottom + 24,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.borderLight,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Withdraw Funds',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Available: ${currFmt.format(wallet.availableBalance)}',
-              style: const TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: wallet.availableBalance > 0
-                    ? () {
-                        Navigator.pop(ctx);
-                        vm.requestPayout(wallet.availableBalance);
-                      }
-                    : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.secondary,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: AppColors.border,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: Text(
-                  'Withdraw ${currFmt.format(wallet.availableBalance)}',
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
+// ─────────────────────────────────────────────────────────────────────
+//  Bank-not-verified red banner (auto-payout flow blocker).
+// ─────────────────────────────────────────────────────────────────────
+class _BankWarningBanner extends StatelessWidget {
+  const _BankWarningBanner({required this.bankStatus, required this.onTap});
+
+  final BankStatus bankStatus;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isMissing = bankStatus == BankStatus.notAdded ||
+        bankStatus == BankStatus.unknown;
+    final title = isMissing
+        ? 'Bank account not added'
+        : 'Bank verification pending';
+    final subtitle = isMissing
+        ? 'Add your bank account so Monday\u2019s payout can settle.'
+        : 'Verification in progress \u2014 you can edit details if needed.';
+
+    return Material(
+      color: AppColors.error,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              const Icon(Icons.warning_rounded, color: Colors.white, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
-          ],
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -339,18 +266,79 @@ class _EarningsDashboardState extends State<_EarningsDashboard> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  1. Hero Card — Total Earnings
+//  Awaiting-bank-info amber banner — settlement created but blocked
+//  because the vendor never added/verified a bank account.
 // ─────────────────────────────────────────────────────────────────────
-class _HeroCard extends StatelessWidget {
-  const _HeroCard({
-    required this.totalEarnings,
-    required this.subtitle,
-    required this.availableBalance,
+class _AwaitingBankBanner extends StatelessWidget {
+  const _AwaitingBankBanner({
+    required this.entry,
+    required this.currFmt,
+    required this.onTap,
   });
 
-  final String totalEarnings;
-  final String subtitle;
-  final String availableBalance;
+  final PayoutHistoryEntry entry;
+  final NumberFormat currFmt;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.warning,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              const Icon(Icons.hourglass_top_rounded,
+                  color: Colors.white, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${currFmt.format(entry.amount)} stuck \u2014 add bank to release',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Settlement ${entry.settlementId} \u2022 ${entry.periodLabel}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  This Week hero card
+// ─────────────────────────────────────────────────────────────────────
+class _ThisWeekHero extends StatelessWidget {
+  const _ThisWeekHero({required this.thisWeek, required this.currFmt});
+
+  final ThisWeekEarnings thisWeek;
+  final NumberFormat currFmt;
 
   @override
   Widget build(BuildContext context) {
@@ -384,25 +372,35 @@ class _HeroCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Icon(
-                  Icons.account_balance_wallet_rounded,
+                  Icons.calendar_view_week_rounded,
                   color: Colors.white,
                   size: 22,
                 ),
               ),
               const SizedBox(width: 12),
               const Text(
-                'Total Earnings',
+                'This Week',
                 style: TextStyle(
                   color: Colors.white70,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
               ),
+              const Spacer(),
+              if (thisWeek.periodLabel.isNotEmpty)
+                Text(
+                  thisWeek.periodLabel,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 16),
           Text(
-            totalEarnings,
+            currFmt.format(thisWeek.netEarnings),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 32,
@@ -412,7 +410,7 @@ class _HeroCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            subtitle,
+            'Net earnings \u2022 ${thisWeek.totalOrders} orders',
             style: TextStyle(
               color: Colors.white.withAlpha(180),
               fontSize: 12,
@@ -420,30 +418,43 @@ class _HeroCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white.withAlpha(18),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.account_balance_rounded,
-                  color: Colors.white70,
-                  size: 14,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Available: $availableBalance',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+          Row(
+            children: [
+              _heroChip(
+                icon: Icons.payments_rounded,
+                label: 'Gross ${currFmt.format(thisWeek.grossEarnings)}',
+              ),
+              const SizedBox(width: 8),
+              _heroChip(
+                icon: Icons.receipt_long_rounded,
+                label:
+                    'Fees ${currFmt.format(thisWeek.commissionDeducted + thisWeek.gstDeducted)}',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _heroChip({required IconData icon, required String label}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(18),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white70, size: 13),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -453,224 +464,147 @@ class _HeroCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  2. Withdraw Button
+//  Next Payout card
 // ─────────────────────────────────────────────────────────────────────
-class _WithdrawButton extends StatelessWidget {
-  const _WithdrawButton({required this.canWithdraw, required this.onPressed});
+class _NextPayoutCard extends StatelessWidget {
+  const _NextPayoutCard({required this.payoutInfo, required this.currFmt});
 
-  final bool canWithdraw;
-  final VoidCallback onPressed;
+  final PayoutInfo payoutInfo;
+  final NumberFormat currFmt;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: double.infinity,
-      height: 50,
-      child: ElevatedButton.icon(
-        onPressed: canWithdraw ? onPressed : null,
-        icon: const Icon(Icons.arrow_upward_rounded, size: 18),
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Withdraw Funds',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(width: 10),
-            Container(width: 1, height: 18, color: Colors.white.withAlpha(60)),
-            const SizedBox(width: 10),
-            const Icon(Icons.history_rounded, size: 16),
-          ],
-        ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.secondary,
-          foregroundColor: Colors.white,
-          disabledBackgroundColor: AppColors.border,
-          disabledForegroundColor: AppColors.textHint,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
-    );
-  }
-}
+    final dateFmt = DateFormat('EEE, dd MMM');
+    final ready = payoutInfo.bankReady;
+    final accent = ready ? AppColors.success : AppColors.warning;
 
-// ─────────────────────────────────────────────────────────────────────
-//  3. Time Filter Row
-// ─────────────────────────────────────────────────────────────────────
-class _TimeFilterRow extends StatelessWidget {
-  const _TimeFilterRow({
-    required this.selectedFilter,
-    required this.onFilterChanged,
-    required this.onCustomTapped,
-    this.customDateRange,
-  });
-
-  final String selectedFilter;
-  final DateTimeRange? customDateRange;
-  final void Function(String) onFilterChanged;
-  final VoidCallback onCustomTapped;
-
-  static const _presets = ['Today', 'This Week', 'This Month'];
-
-  @override
-  Widget build(BuildContext context) {
-    // Build the Custom button label
-    String customLabel = 'Custom';
-    if (selectedFilter == 'Custom' && customDateRange != null) {
-      final fmt = DateFormat('dd MMM');
-      customLabel =
-          '${fmt.format(customDateRange!.start)} – ${fmt.format(customDateRange!.end)}';
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.borderLight),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ..._presets.map(
-              (label) => _filterChip(
-                label: label,
-                selected: selectedFilter == label,
-                onTap: () => onFilterChanged(label),
-              ),
-            ),
-            _filterChip(
-              label: customLabel,
-              selected: selectedFilter == 'Custom',
-              onTap: onCustomTapped,
-              icon: Icons.calendar_today_rounded,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _filterChip({
-    required String label,
-    required bool selected,
-    required VoidCallback onTap,
-    IconData? icon,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? AppColors.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              Icon(
-                icon,
-                size: 13,
-                color: selected ? Colors.white : AppColors.textSecondary,
-              ),
-              const SizedBox(width: 5),
-            ],
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: selected ? Colors.white : AppColors.textSecondary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  4. Stat Card — colored top border (matches design)
-// ─────────────────────────────────────────────────────────────────────
-class _StatCardColored extends StatelessWidget {
-  const _StatCardColored({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.accentColor,
-  });
-
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color accentColor;
-
-  @override
-  Widget build(BuildContext context) {
     return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.borderLight),
       ),
-      clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Colored top border
-          Container(
-            height: 4,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [accentColor, accentColor.withAlpha(150)],
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: accent.withAlpha(20),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  Icons.event_available_rounded,
+                  color: accent,
+                  size: 18,
+                ),
               ),
-            ),
+              const SizedBox(width: 10),
+              const Text(
+                'NEXT PAYOUT',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textHint,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ],
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: accentColor.withAlpha(20),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(icon, color: accentColor, size: 16),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                currFmt.format(payoutInfo.estimatedAmount),
+                style: const TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  label,
+              ),
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  payoutInfo.nextPayoutDate != null
+                      ? 'on ${dateFmt.format(payoutInfo.nextPayoutDate!)}'
+                      : payoutInfo.payoutSchedule,
                   style: const TextStyle(
-                    fontSize: 10,
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.textHint,
-                    letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(
+                Icons.account_balance_rounded,
+                size: 13,
+                color: AppColors.textSecondary,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  payoutInfo.bankAccount,
                   style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
                   ),
-                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
+          if (payoutInfo.belowMinPayout) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.warningLight,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.info_outline_rounded,
+                    color: AppColors.warning,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Below minimum (${currFmt.format(payoutInfo.minimumPayout)}) \u2014 will roll into next week.',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.warning,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (payoutInfo.message.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              payoutInfo.message,
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.textHint,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -678,52 +612,19 @@ class _StatCardColored extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  5. Earnings Trend Chart (fl_chart)
+//  Daily breakdown bar chart (this_week.daily_breakdown)
 // ─────────────────────────────────────────────────────────────────────
-class _EarningsTrendChart extends StatelessWidget {
-  const _EarningsTrendChart({
-    required this.chartData,
-    this.recentTransactions = const [],
-  });
+class _DailyBreakdownChart extends StatelessWidget {
+  const _DailyBreakdownChart({required this.thisWeek, required this.currFmt});
 
-  final List<ChartDayData> chartData;
-  final List<VendorRecentTransaction> recentTransactions;
+  final ThisWeekEarnings thisWeek;
+  final NumberFormat currFmt;
 
   @override
   Widget build(BuildContext context) {
-    final dayTotals = <double>[];
-    final dayLabels = <String>[];
-
-    if (chartData.isNotEmpty) {
-      // Use server-provided chart data
-      for (final entry in chartData) {
-        dayLabels.add(entry.day);
-        dayTotals.add(entry.amount);
-      }
-    } else {
-      // Fallback: compute from recent transactions
-      final now = DateTime.now();
-      final dayFmt = DateFormat('E');
-      for (int d = 6; d >= 0; d--) {
-        final day = DateTime(now.year, now.month, now.day - d);
-        dayLabels.add(dayFmt.format(day));
-        double total = 0;
-        for (final t in recentTransactions) {
-          try {
-            final dt = DateTime.parse(t.date).toLocal();
-            if (dt.year == day.year &&
-                dt.month == day.month &&
-                dt.day == day.day) {
-              total += t.amount;
-            }
-          } catch (_) {}
-        }
-        dayTotals.add(total);
-      }
-    }
-
-    final maxY = dayTotals.fold(0.0, (a, b) => a > b ? a : b);
-    final ceiling = maxY > 0 ? (maxY * 1.3) : 500.0;
+    final days = thisWeek.dailyBreakdown;
+    final maxY = thisWeek.peakDailyEarning;
+    final ceiling = maxY > 0 ? maxY * 1.25 : 500.0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -736,7 +637,7 @@ class _EarningsTrendChart extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Earnings Trend',
+            'Daily Breakdown',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w800,
@@ -744,124 +645,207 @@ class _EarningsTrendChart extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Last 7 days performance',
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          Text(
+            thisWeek.periodLabel.isNotEmpty
+                ? thisWeek.periodLabel
+                : 'Net earnings per day',
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 16),
-          SizedBox(
-            height: 180,
-            child: LineChart(
-              LineChartData(
-                minY: 0,
-                maxY: ceiling,
-                gridData: FlGridData(
-                  show: true,
-                  drawVerticalLine: false,
-                  horizontalInterval: ceiling / 4,
-                  getDrawingHorizontalLine: (value) =>
-                      FlLine(color: AppColors.borderLight, strokeWidth: 1),
+          if (!thisWeek.hasAnyActivity)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 28),
+              child: Center(
+                child: Text(
+                  'No orders yet this week',
+                  style: TextStyle(color: AppColors.textHint, fontSize: 13),
                 ),
-                titlesData: FlTitlesData(
-                  topTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
+              ),
+            )
+          else
+            SizedBox(
+              height: 180,
+              child: BarChart(
+                BarChartData(
+                  alignment: BarChartAlignment.spaceAround,
+                  maxY: ceiling,
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    horizontalInterval: ceiling / 4,
+                    getDrawingHorizontalLine: (_) =>
+                        FlLine(color: AppColors.borderLight, strokeWidth: 1),
                   ),
-                  rightTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false),
-                  ),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 40,
-                      interval: ceiling / 4,
-                      getTitlesWidget: (value, meta) {
-                        if (value == 0) return const SizedBox.shrink();
-                        return Text(
-                          '\u20B9${value.toInt()}',
-                          style: const TextStyle(
-                            fontSize: 9,
-                            color: AppColors.textHint,
-                          ),
-                        );
-                      },
+                  borderData: FlBorderData(show: false),
+                  titlesData: FlTitlesData(
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
                     ),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: 1,
-                      getTitlesWidget: (value, meta) {
-                        final i = value.toInt();
-                        if (i < 0 || i >= dayLabels.length) {
-                          return const SizedBox.shrink();
-                        }
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Text(
-                            dayLabels[i],
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                        interval: ceiling / 4,
+                        getTitlesWidget: (value, meta) {
+                          if (value == 0) return const SizedBox.shrink();
+                          return Text(
+                            '\u20B9${value.toInt()}',
                             style: const TextStyle(
-                              fontSize: 10,
+                              fontSize: 9,
                               color: AppColors.textHint,
-                              fontWeight: FontWeight.w500,
                             ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                ),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: List.generate(
-                      dayTotals.length,
-                      (i) => FlSpot(i.toDouble(), dayTotals[i]),
-                    ),
-                    isCurved: true,
-                    curveSmoothness: 0.3,
-                    color: AppColors.primary,
-                    barWidth: 2.5,
-                    isStrokeCapRound: true,
-                    dotData: FlDotData(
-                      show: true,
-                      getDotPainter: (spot, percent, bar, index) =>
-                          FlDotCirclePainter(
-                            radius: 3.5,
-                            color: AppColors.surface,
-                            strokeWidth: 2,
-                            strokeColor: AppColors.primary,
-                          ),
-                    ),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          AppColors.primary.withAlpha(50),
-                          AppColors.primary.withAlpha(5),
-                        ],
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        interval: 1,
+                        getTitlesWidget: (value, meta) {
+                          final i = value.toInt();
+                          if (i < 0 || i >= days.length) {
+                            return const SizedBox.shrink();
+                          }
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              days[i].shortDay,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: AppColors.textHint,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
                   ),
-                ],
-                lineTouchData: LineTouchData(
-                  touchTooltipData: LineTouchTooltipData(
-                    getTooltipItems: (spots) => spots
-                        .map(
-                          (s) => LineTooltipItem(
-                            '\u20B9${s.y.toInt()}',
-                            const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                            ),
+                  barGroups: List.generate(days.length, (i) {
+                    final d = days[i];
+                    return BarChartGroupData(
+                      x: i,
+                      barRods: [
+                        BarChartRodData(
+                          toY: d.earnings,
+                          width: 16,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(4),
                           ),
-                        )
-                        .toList(),
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [
+                              AppColors.primary.withAlpha(180),
+                              AppColors.primary,
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipItem: (group, _, rod, _) {
+                        final d = days[group.x];
+                        return BarTooltipItem(
+                          '${currFmt.format(rod.toY)}\n${d.orders} orders',
+                          const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Earnings breakdown card — Gross → Commission → GST → Penalties → Net
+// ─────────────────────────────────────────────────────────────────────
+class _BreakdownCard extends StatelessWidget {
+  const _BreakdownCard({required this.thisWeek, required this.currFmt});
+
+  final ThisWeekEarnings thisWeek;
+  final NumberFormat currFmt;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'This Week\u2019s Math',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _row('Gross earnings', thisWeek.grossEarnings, isPositive: true),
+          _row('Platform commission', -thisWeek.commissionDeducted),
+          _row('GST', -thisWeek.gstDeducted),
+          if (thisWeek.penalties > 0)
+            _row('Penalties', -thisWeek.penalties, isPenalty: true),
+          const Divider(height: 20, color: AppColors.borderLight),
+          _row('Net payout', thisWeek.netEarnings, isBold: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String label, double value,
+      {bool isBold = false, bool isPositive = false, bool isPenalty = false}) {
+    final color = isPenalty
+        ? AppColors.error
+        : (value < 0
+            ? AppColors.textSecondary
+            : (isBold || isPositive
+                ? AppColors.textPrimary
+                : AppColors.textPrimary));
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: isBold ? 14 : 13,
+                color: AppColors.textSecondary,
+                fontWeight: isBold ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+          Text(
+            '${value < 0 ? '-' : ''}${NumberFormat.currency(symbol: '\u20B9', decimalDigits: 0).format(value.abs())}',
+            style: TextStyle(
+              fontSize: isBold ? 16 : 13,
+              fontWeight: isBold ? FontWeight.w800 : FontWeight.w600,
+              color: color,
             ),
           ),
         ],
@@ -871,16 +855,67 @@ class _EarningsTrendChart extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  6. Recent Transactions
+//  Carry-forward strip (only when amount > 0)
 // ─────────────────────────────────────────────────────────────────────
-class _RecentTransactions extends StatelessWidget {
-  const _RecentTransactions({
-    required this.transactions,
+class _CarryForwardStrip extends StatelessWidget {
+  const _CarryForwardStrip({required this.payoutInfo, required this.currFmt});
+
+  final PayoutInfo payoutInfo;
+  final NumberFormat currFmt;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.infoLight,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.info.withAlpha(60)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.history_rounded, color: AppColors.info, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Carry-forward: ${currFmt.format(payoutInfo.carryForwardAmount)}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Below minimum payout \u2014 added to next week\u2019s settlement.',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Payout history list
+// ─────────────────────────────────────────────────────────────────────
+class _PayoutHistoryList extends StatelessWidget {
+  const _PayoutHistoryList({
+    required this.history,
     required this.currFmt,
     this.onViewAll,
   });
 
-  final List<VendorRecentTransaction> transactions;
+  final List<PayoutHistoryEntry> history;
   final NumberFormat currFmt;
   final VoidCallback? onViewAll;
 
@@ -899,13 +934,13 @@ class _RecentTransactions extends StatelessWidget {
           Row(
             children: [
               const Icon(
-                Icons.swap_vert_rounded,
+                Icons.history_rounded,
                 size: 16,
                 color: AppColors.textSecondary,
               ),
               const SizedBox(width: 6),
               const Text(
-                'RECENT TRANSACTIONS',
+                'RECENT PAYOUTS',
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
@@ -917,83 +952,68 @@ class _RecentTransactions extends StatelessWidget {
               if (onViewAll != null)
                 GestureDetector(
                   onTap: onViewAll,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
+                  child: const Text(
+                    'View all',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary,
                     ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'View All',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                        SizedBox(width: 2),
-                        Icon(
-                          Icons.arrow_forward_ios_rounded,
-                          size: 10,
-                          color: AppColors.primary,
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                Text(
-                  '${transactions.length} orders',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textHint,
-                    fontWeight: FontWeight.w500,
                   ),
                 ),
             ],
           ),
           const SizedBox(height: 12),
-          if (transactions.isEmpty)
+          if (history.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 24),
               child: Center(
                 child: Text(
-                  'No recent transactions',
+                  'No payouts yet',
                   style: TextStyle(color: AppColors.textHint, fontSize: 13),
                 ),
               ),
             )
           else
-            ...transactions
-                .take(10)
-                .map((t) => _TransactionTile(txn: t, currFmt: currFmt)),
+            ...history.take(5).map((p) => _PayoutTile(entry: p, currFmt: currFmt)),
         ],
       ),
     );
   }
 }
 
-class _TransactionTile extends StatelessWidget {
-  const _TransactionTile({required this.txn, required this.currFmt});
+class _PayoutTile extends StatelessWidget {
+  const _PayoutTile({required this.entry, required this.currFmt});
 
-  final VendorRecentTransaction txn;
+  final PayoutHistoryEntry entry;
   final NumberFormat currFmt;
 
   @override
   Widget build(BuildContext context) {
-    String timeStr = '';
-    try {
-      final dt = DateTime.parse(txn.date).toLocal();
-      timeStr = DateFormat('dd MMM, hh:mm a').format(dt);
-    } catch (_) {
-      timeStr = txn.date;
+    Color statusBg;
+    Color statusFg;
+    IconData icon;
+    if (entry.isPaid) {
+      statusBg = AppColors.successLight;
+      statusFg = AppColors.success;
+      icon = Icons.check_circle_rounded;
+    } else if (entry.isAwaitingBank) {
+      statusBg = AppColors.warningLight;
+      statusFg = AppColors.warning;
+      icon = Icons.hourglass_top_rounded;
+    } else if (entry.isFailed) {
+      statusBg = AppColors.errorLight;
+      statusFg = AppColors.error;
+      icon = Icons.error_rounded;
+    } else {
+      statusBg = AppColors.background;
+      statusFg = AppColors.textSecondary;
+      icon = Icons.schedule_rounded;
     }
+
+    final paidStr = entry.paidOn != null
+        ? DateFormat('dd MMM yyyy').format(entry.paidOn!)
+        : entry.periodLabel;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -1003,14 +1023,10 @@ class _TransactionTile extends StatelessWidget {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: AppColors.successLight,
+              color: statusBg,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(
-              Icons.south_west_rounded,
-              color: AppColors.success,
-              size: 16,
-            ),
+            child: Icon(icon, color: statusFg, size: 18),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1018,23 +1034,20 @@ class _TransactionTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Order #${txn.orderId}',
+                  entry.periodLabel.isEmpty
+                      ? entry.settlementId
+                      : entry.periodLabel,
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textPrimary,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '\u{1F464} ${txn.customer}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                Text(
-                  timeStr,
+                  entry.utr.isNotEmpty ? 'UTR: ${entry.utr}' : paidStr,
                   style: const TextStyle(
                     fontSize: 11,
                     color: AppColors.textHint,
@@ -1043,12 +1056,142 @@ class _TransactionTile extends StatelessWidget {
               ],
             ),
           ),
-          Text(
-            '+${currFmt.format(txn.amount)}',
-            style: const TextStyle(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                currFmt.format(entry.amount),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                entry.statusDisplay,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: statusFg,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Lifetime stats card
+// ─────────────────────────────────────────────────────────────────────
+class _LifetimeCard extends StatelessWidget {
+  const _LifetimeCard({required this.lifetime, required this.currFmt});
+
+  final LifetimeEarnings lifetime;
+  final NumberFormat currFmt;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Lifetime',
+            style: TextStyle(
               fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _stat(
+                  'Earned',
+                  currFmt.format(lifetime.totalEarned),
+                  AppColors.success,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _stat(
+                  'Paid out',
+                  currFmt.format(lifetime.totalPaidOut),
+                  AppColors.info,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _stat(
+                  'Commission',
+                  currFmt.format(lifetime.totalCommission),
+                  AppColors.primary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _stat(
+                  'GST',
+                  currFmt.format(lifetime.totalGst),
+                  AppColors.secondary,
+                ),
+              ),
+            ],
+          ),
+          if (lifetime.totalPenalties > 0) ...[
+            const SizedBox(height: 10),
+            _stat(
+              'Penalties',
+              currFmt.format(lifetime.totalPenalties),
+              AppColors.error,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _stat(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withAlpha(15),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              fontSize: 10,
               fontWeight: FontWeight.w700,
-              color: AppColors.success,
+              color: color,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
             ),
           ),
         ],
@@ -1061,10 +1204,17 @@ class _TransactionTile extends StatelessWidget {
 //  7. Bank Status Card
 // ─────────────────────────────────────────────────────────────────────
 class _BankStatusCard extends StatelessWidget {
-  const _BankStatusCard({required this.bankData, required this.bankLoading});
+  const _BankStatusCard({
+    required this.bankData,
+    required this.bankLoading,
+    required this.payoutInfo,
+    required this.onTap,
+  });
 
   final BankAccountData? bankData;
   final bool bankLoading;
+  final PayoutInfo payoutInfo;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1089,79 +1239,89 @@ class _BankStatusCard extends StatelessWidget {
       );
     }
 
-    final hasBank = bankData != null;
-    final verified = bankData?.isVerified ?? false;
+    // Authoritative status from payout_info; fall back to local bank data.
+    final verified = payoutInfo.bankReady ||
+        (bankData?.isVerified ?? false);
+    final hasBank = bankData != null ||
+        payoutInfo.bankStatus != BankStatus.notAdded &&
+            payoutInfo.bankStatus != BankStatus.unknown;
+    final accent = verified
+        ? AppColors.success
+        : (hasBank ? AppColors.warning : AppColors.error);
+    final title = verified
+        ? 'Bank Verified'
+        : (hasBank ? 'Verification Pending' : 'No Bank Added');
+    final subtitle = verified
+        ? payoutInfo.bankAccount
+        : (hasBank
+            ? 'We\u2019ll let you know once verification completes.'
+            : 'Add a bank account to receive weekly payouts.');
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: hasBank
-              ? (verified
-                    ? AppColors.success.withAlpha(60)
-                    : AppColors.warning.withAlpha(60))
-              : AppColors.borderLight,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: accent.withAlpha(60)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: accent.withAlpha(25),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  verified
+                      ? Icons.verified_rounded
+                      : (hasBank
+                          ? Icons.pending_rounded
+                          : Icons.account_balance_outlined),
+                  color: accent,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: accent,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textHint,
+                size: 22,
+              ),
+            ],
+          ),
         ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: hasBank
-                  ? (verified ? AppColors.successLight : AppColors.warningLight)
-                  : AppColors.background,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              hasBank
-                  ? (verified ? Icons.verified_rounded : Icons.pending_rounded)
-                  : Icons.account_balance_outlined,
-              color: hasBank
-                  ? (verified ? AppColors.success : AppColors.warning)
-                  : AppColors.textHint,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  hasBank
-                      ? (verified ? 'Bank Verified' : 'Verification Pending')
-                      : 'No Bank Added',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: hasBank
-                        ? (verified ? AppColors.success : AppColors.warning)
-                        : AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  hasBank
-                      ? '${bankData!.bankName} \u2022 ${bankData!.maskedNumber}'
-                      : 'Add a bank account to receive payouts',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Icon(
-            Icons.chevron_right_rounded,
-            color: AppColors.textHint,
-            size: 22,
-          ),
-        ],
       ),
     );
   }

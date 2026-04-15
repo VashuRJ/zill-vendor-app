@@ -3,7 +3,12 @@ import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/services/api_service.dart';
 import '../../earnings/viewmodel/earnings_viewmodel.dart'
-    show EarningsCommission, EarningsSettlement, EarningsWallet, Payout;
+    show
+        EarningsSummary,
+        LifetimeEarnings,
+        Payout,
+        PayoutInfo,
+        ThisWeekEarnings;
 
 // ─────────────────────────────────────────────────────────────────────
 //  Model
@@ -78,9 +83,9 @@ class BankAccountViewModel extends ChangeNotifier {
   // ── State ──────────────────────────────────────────────────────────
   BankStatus _status = BankStatus.fetching;
   BankAccountData? _bankData;
-  EarningsWallet? _wallet;
-  EarningsCommission? _commission;
-  EarningsSettlement? _settlement;
+  PayoutInfo? _payoutInfo;
+  ThisWeekEarnings? _thisWeek;
+  LifetimeEarnings? _lifetime;
   List<Payout> _payouts = [];
   String? _errorMessage;
   bool _isFetchError = false;
@@ -88,9 +93,9 @@ class BankAccountViewModel extends ChangeNotifier {
   // ── Getters ────────────────────────────────────────────────────────
   BankStatus get status => _status;
   BankAccountData? get bankData => _bankData;
-  EarningsWallet? get wallet => _wallet;
-  EarningsCommission? get commission => _commission;
-  EarningsSettlement? get settlement => _settlement;
+  PayoutInfo? get payoutInfo => _payoutInfo;
+  ThisWeekEarnings? get thisWeek => _thisWeek;
+  LifetimeEarnings? get lifetime => _lifetime;
   List<Payout> get payouts => _payouts;
   String? get errorMessage => _errorMessage;
 
@@ -132,21 +137,14 @@ class BankAccountViewModel extends ChangeNotifier {
           ? BankAccountData.fromJson(account as Map<String, dynamic>)
           : null;
 
-      // Earnings data (optional — don't block on failure)
+      // Earnings data (optional — don't block on failure).
+      // New shape: this_week + payout_info + lifetime + payout_history.
       final eData = await earningsFuture;
       if (eData != null) {
-        final w = eData['wallet'];
-        if (w is Map<String, dynamic>) {
-          _wallet = EarningsWallet.fromJson(w);
-        }
-        final c = eData['commission'];
-        if (c is Map<String, dynamic>) {
-          _commission = EarningsCommission.fromJson(c);
-        }
-        final s = eData['settlement'];
-        if (s is Map<String, dynamic>) {
-          _settlement = EarningsSettlement.fromJson(s);
-        }
+        final summary = EarningsSummary.fromJson(eData);
+        _thisWeek = summary.thisWeek;
+        _payoutInfo = summary.payoutInfo;
+        _lifetime = summary.lifetime;
       }
 
       // Payouts data (optional — don't block on failure)
