@@ -12,7 +12,6 @@ import 'package:shimmer/shimmer.dart';
 import '../../../core/constants/app_colors.dart';
 import '../viewmodel/menu_viewmodel.dart';
 import 'add_edit_menu_screen.dart';
-import 'bulk_upload_screen.dart';
 import 'manage_categories_screen.dart';
 
 // ────────────────────────────────────────────────────────────────────
@@ -29,9 +28,20 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
   TabController? _tabController;
   final TextEditingController _searchController = TextEditingController();
 
+  // Speed-dial FAB — tap the main "+" to fan out the action chips
+  // above it (Add Menu Item / Manage Categories) instead of opening a
+  // bottom sheet. The animation controller drives both the rotation
+  // of the main icon (+ → ×) and the scale/opacity of the mini chips.
+  late final AnimationController _fabController;
+  bool _fabOpen = false;
+
   @override
   void initState() {
     super.initState();
+    _fabController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<MenuViewModel>().fetchMenu();
     });
@@ -41,7 +51,32 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
   void dispose() {
     _searchController.dispose();
     _tabController?.dispose();
+    _fabController.dispose();
     super.dispose();
+  }
+
+  void _toggleFab() {
+    setState(() {
+      _fabOpen = !_fabOpen;
+      _fabOpen ? _fabController.forward() : _fabController.reverse();
+    });
+  }
+
+  void _closeFab() {
+    if (!_fabOpen) return;
+    setState(() {
+      _fabOpen = false;
+      _fabController.reverse();
+    });
+  }
+
+  void _runFabAction(VoidCallback action) {
+    _closeFab();
+    // Wait for the close animation so the mini chips don't jank away
+    // mid-navigation push.
+    Future.delayed(const Duration(milliseconds: 180), () {
+      if (mounted) action();
+    });
   }
 
   void _rebuildTabs(int length) {
@@ -166,16 +201,6 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
     });
   }
 
-  // ── Bulk upload screen launcher ───────────────────────────────────
-  void _goToBulkUpload() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const BulkUploadScreen()),
-    ).then((_) {
-      if (mounted) context.read<MenuViewModel>().fetchMenu();
-    });
-  }
-
   // ── Manage Categories screen launcher ─────────────────────────────
   void _goToManageCategories() {
     Navigator.push(
@@ -186,94 +211,104 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
     });
   }
 
-  // ── Menu Actions bottom sheet ─────────────────────────────────────
-  // Single FAB → modal bottom sheet with three actions, mirroring the
-  // web Menu Management "+" stack. Each tile closes the sheet first
-  // and runs its action on the next frame so the navigation animation
-  // doesn't fight with the sheet dismissal.
-  void _showMenuActionsSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetCtx) {
-        void runAction(VoidCallback action) {
-          Navigator.of(sheetCtx).pop();
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) action();
-          });
-        }
-
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Drag handle
-                Container(
-                  margin: const EdgeInsets.only(top: 10, bottom: 6),
-                  width: 42,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                // Header
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 10, 20, 4),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Menu Actions',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
+  // ── Speed-dial FAB (replaces the older bottom-sheet "Menu Actions") ─
+  // Tapping the main "+" fans the action chips upward (Add Menu Item
+  // → Manage Categories) and rotates the icon to "×" so the same
+  // button collapses the stack. We compose it as a Column inside a
+  // SizedBox tall enough to hold the expanded state — Flutter still
+  // applies the parent Scaffold's `floatingActionButton` slot rules
+  // (bottom-right alignment, safe-area aware), so the chips stay
+  // anchored over the bottom nav without colliding with content.
+  Widget _buildMenuFab() {
+    return AnimatedBuilder(
+      animation: _fabController,
+      builder: (context, _) {
+        final t = _fabController.value;
+        return SizedBox(
+          // Reserve enough vertical room for two stacked chips above
+          // the main button so the tap targets sit cleanly when open
+          // and the FAB doesn't shift the layout when toggling.
+          height: 60 + (52 + 12) * 2 + 8,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // Mini chip 1 — Add Menu Item
+              _SpeedDialChip(
+                visible: _fabOpen,
+                progress: t,
+                index: 1,
+                icon: Icons.restaurant_menu_rounded,
+                label: 'Add Menu Item',
+                onTap: () => _runFabAction(() => _goToAddEdit()),
+              ),
+              const SizedBox(height: 12),
+              // Mini chip 2 — Manage Categories
+              _SpeedDialChip(
+                visible: _fabOpen,
+                progress: t,
+                index: 0,
+                icon: Icons.category_rounded,
+                label: 'Manage Categories',
+                onTap: () => _runFabAction(_goToManageCategories),
+              ),
+              const SizedBox(height: 14),
+              // Main FAB — rotates between + and × based on open state
+              Tooltip(
+                message: _fabOpen ? 'Close' : 'Menu actions',
+                child: Material(
+                  color: Colors.transparent,
+                  child: Ink(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          AppColors.primaryLight,
+                          AppColors.primaryDark,
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(18),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.primary.withAlpha(110),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                        BoxShadow(
+                          color: Colors.black.withAlpha(30),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: InkWell(
+                      onTap: _toggleFab,
+                      borderRadius: BorderRadius.circular(18),
+                      splashColor: Colors.white24,
+                      highlightColor: Colors.white10,
+                      child: Center(
+                        child: Transform.rotate(
+                          // 0 → +, 1 → × (135° rotation makes a clean X
+                          // out of the Material plus icon).
+                          angle: t * (3.141592653589793 * 0.75),
+                          child: const Icon(
+                            Icons.add_rounded,
+                            size: 30,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(height: 4),
-                _MenuActionTile(
-                  icon: Icons.restaurant_menu,
-                  title: 'Add Menu Item',
-                  subtitle: 'Create a new dish or product',
-                  onTap: () => runAction(() => _goToAddEdit()),
-                ),
-                _MenuActionTile(
-                  icon: Icons.category_outlined,
-                  title: 'Manage Categories',
-                  subtitle: 'Create, edit or reorder categories',
-                  onTap: () => runAction(_goToManageCategories),
-                ),
-                _MenuActionTile(
-                  icon: Icons.upload_file_outlined,
-                  title: 'Bulk Upload Menu',
-                  subtitle: 'Import multiple items via CSV',
-                  onTap: () => runAction(_goToBulkUpload),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       },
-    );
-  }
-
-  // ── Shared FAB used across loaded / empty / error states ──────────
-  Widget _buildMenuFab() {
-    return FloatingActionButton(
-      onPressed: _showMenuActionsSheet,
-      backgroundColor: AppColors.primary,
-      foregroundColor: Colors.white,
-      tooltip: 'Menu actions',
-      child: const Icon(Icons.add, size: 28),
     );
   }
 
@@ -506,71 +541,112 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  Menu Action Tile — used inside the "Menu Actions" bottom sheet
-//  triggered by the menu screen FAB. Tinted icon + title + subtitle +
-//  trailing chevron, with a tappable ink ripple over the whole row.
+//  Speed-dial chip — pill-shaped action that fans out above the main
+//  FAB when expanded. Stagger is driven by `index` (0 = closer to the
+//  FAB, fades in first) so the chips reveal one after the other and
+//  the motion reads as a sequence rather than a pop. We animate scale,
+//  opacity, and a small upward translate together; IgnorePointer flips
+//  off when collapsed so taps don't leak through to invisible chips.
 // ────────────────────────────────────────────────────────────────────
-class _MenuActionTile extends StatelessWidget {
+class _SpeedDialChip extends StatelessWidget {
+  final bool visible;
+  final double progress; // 0..1 driven by the FAB controller
+  final int index; // 0 = nearest to main FAB
   final IconData icon;
-  final String title;
-  final String subtitle;
+  final String label;
   final VoidCallback onTap;
 
-  const _MenuActionTile({
+  const _SpeedDialChip({
+    required this.visible,
+    required this.progress,
+    required this.index,
     required this.icon,
-    required this.title,
-    required this.subtitle,
+    required this.label,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        child: Row(
-          children: [
-            // Tinted square icon — primary brand colour pop.
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withAlpha(28),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, color: AppColors.primary, size: 22),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
+    // Stagger window — chip 0 animates over [0, 0.7], chip 1 over
+    // [0.3, 1.0]. Clamp to [0,1] before easing.
+    final start = index * 0.3;
+    final end = start + 0.7;
+    final raw = ((progress - start) / (end - start)).clamp(0.0, 1.0);
+    final eased = Curves.easeOutCubic.transform(raw);
+
+    return IgnorePointer(
+      ignoring: !visible || progress < 0.6,
+      child: Opacity(
+        opacity: eased,
+        child: Transform.translate(
+          offset: Offset(0, (1 - eased) * 12),
+          child: Transform.scale(
+            scale: 0.85 + 0.15 * eased,
+            alignment: Alignment.bottomRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Text label pill — sits to the left of the round icon
+                // so it reads naturally and doesn't fight with the
+                // bottom nav on the right edge.
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withAlpha(28),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    label,
                     style: const TextStyle(
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
                       color: AppColors.textPrimary,
                     ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textHint,
+                ),
+                const SizedBox(width: 10),
+                // Round icon button — tapping anywhere on the chip
+                // (icon or label) triggers the action via the InkWell.
+                Material(
+                  color: Colors.transparent,
+                  child: Ink(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withAlpha(36),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: InkWell(
+                      onTap: onTap,
+                      customBorder: const CircleBorder(),
+                      child: Icon(
+                        icon,
+                        color: AppColors.primary,
+                        size: 22,
+                      ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-            const Icon(
-              Icons.chevron_right_rounded,
-              color: AppColors.textHint,
-              size: 22,
-            ),
-          ],
+          ),
         ),
       ),
     );

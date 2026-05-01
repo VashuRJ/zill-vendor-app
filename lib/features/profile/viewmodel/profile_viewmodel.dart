@@ -2,6 +2,7 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -221,7 +222,38 @@ class ProfileViewModel extends ChangeNotifier {
   String? _settingsError;
   String? _settingsSuccessMsg;
 
-  ProfileViewModel({required ApiService apiService}) : _apiService = apiService;
+  StreamSubscription<void>? _sessionClearedSub;
+
+  ProfileViewModel({required ApiService apiService}) : _apiService = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Reset every vendor-scoped field so the next login starts clean.
+  /// Without this, the restaurant name / verification / bank settings
+  /// from the previous vendor stay visible until the new fetch lands.
+  void clearSession() {
+    _status = ProfileStatus.initial;
+    _data = const ProfileData();
+    _errorMessage = null;
+    _errorType = AppErrorType.unknown;
+    _hasLoadedOnce = false;
+    _profileCompletionPercentage = null;
+    _profileCompletionSections = const <String, bool>{};
+    _localProfileImage = null;
+    _uploadVersion = 0;
+    _settingsStatus = SettingsStatus.initial;
+    _settings = const StoreSettingsData();
+    _settingsError = null;
+    _settingsSuccessMsg = null;
+    notifyListeners();
+  }
 
   // ── Profile getters ──────────────────────────────────────────────
   ProfileStatus get status => _status;
@@ -289,7 +321,12 @@ class ProfileViewModel extends ChangeNotifier {
       _errorMessage = _parseError(profileResult);
       _errorType = _classifyError(profileResult);
       _status = ProfileStatus.error;
-      debugPrint('❌ ProfileViewModel error: ${profileResult.response?.data}');
+      debugPrint(
+        '❌ ProfileViewModel error: type=${profileResult.type} '
+        'status=${profileResult.response?.statusCode} '
+        'msg=${profileResult.message} '
+        'body=${profileResult.response?.data}',
+      );
     }
 
     if (dashboardResult is Response) {
@@ -341,8 +378,14 @@ class ProfileViewModel extends ChangeNotifier {
   }
 
   // ── Save store settings  PUT /api/vendors/profile/ ───────────────
+  //
+  // Note: `delivery_fee` is intentionally NOT sent. Per the 2026-04-20
+  // backend change, per-restaurant delivery fees are deprecated —
+  // platform charges ₹50 base + ₹8/km (capped ₹150) uniformly. The
+  // server silently discards any `delivery_fee` value submitted here,
+  // so sending it would just be noise on the wire and misleading if
+  // anyone reads this payload later.
   Future<bool> updateStoreSettings({
-    required double deliveryFee,
     required double minimumOrderAmount,
     double? freeDeliveryAbove,
     required double deliveryRadiusKm,
@@ -354,7 +397,6 @@ class ProfileViewModel extends ChangeNotifier {
 
     try {
       final payload = <String, dynamic>{
-        'delivery_fee': deliveryFee,
         'minimum_order_amount': minimumOrderAmount,
         'delivery_radius_km': deliveryRadiusKm,
         'free_delivery_above':

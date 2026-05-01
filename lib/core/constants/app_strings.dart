@@ -19,7 +19,10 @@ class AppStrings {
   // Dashboard
   static const String dashboard = 'Dashboard';
   static const String todayOrders = "Today's Orders";
-  static const String todayRevenue = "Today's Revenue";
+  // Renamed from "Today's Revenue" — the backend value is GMV
+  // (subtotal of paid orders), not net payout. Calling it "Revenue"
+  // misled vendors into expecting that as their take-home.
+  static const String todayRevenue = "Today's Gross Sales";
   static const String rating = 'Rating';
   static const String menuItems = 'Menu Items';
   static const String viewAll = 'View All';

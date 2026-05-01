@@ -2,6 +2,8 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -182,8 +184,36 @@ enum MenuStatus { initial, loading, loaded, error }
 
 class MenuViewModel extends ChangeNotifier {
   final ApiService _api;
+  StreamSubscription<void>? _sessionClearedSub;
 
-  MenuViewModel({required ApiService apiService}) : _api = apiService;
+  MenuViewModel({required ApiService apiService}) : _api = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Reset every vendor-scoped field so the next logged-in user never
+  /// sees the previous vendor's menu. Called on both explicit logout
+  /// and 401-triggered session end.
+  void clearSession() {
+    _status = MenuStatus.initial;
+    _error = null;
+    _categories = [];
+    _toggling.clear();
+    _deleting.clear();
+    _saving = false;
+    _searchQuery = '';
+    _vegOnly = false;
+    _nonVegOnly = false;
+    _availableOnly = false;
+    _lastErrorCode = null;
+    notifyListeners();
+  }
 
   MenuStatus _status = MenuStatus.initial;
   String? _error;
@@ -732,10 +762,25 @@ class MenuViewModel extends ChangeNotifier {
     if (e.response == null) return 'Cannot reach server.';
     final data = e.response!.data;
     if (data is Map<String, dynamic>) {
+      // Capture subscription gate codes so the UI can show an
+      // "Upgrade Plan" CTA rather than a bare toast. The menu-item
+      // create endpoint returns `PLAN_LIMIT_EXCEEDED` when a Basic-
+      // plan vendor hits the 50-item cap (backend 2026-04-20).
+      final code = data['code'];
+      if (code == 'PLAN_LIMIT_EXCEEDED' || code == 'SUBSCRIPTION_SUSPENDED') {
+        _lastErrorCode = code as String;
+      }
       if (data['message'] is String) return data['message'] as String;
       if (data['detail'] is String) return data['detail'] as String;
       if (data['error'] is String) return data['error'] as String;
     }
     return 'Error (HTTP ${e.response!.statusCode})';
   }
+
+  /// Machine-readable code from the last error response. Null for
+  /// generic failures. UI switches on this to show an upgrade/renew
+  /// deep-link for subscription-related errors.
+  String? _lastErrorCode;
+  String? get lastErrorCode => _lastErrorCode;
+  void clearLastErrorCode() => _lastErrorCode = null;
 }

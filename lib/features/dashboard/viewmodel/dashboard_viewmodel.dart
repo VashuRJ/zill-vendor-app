@@ -2,6 +2,8 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -183,13 +185,26 @@ class DashboardViewModel extends ChangeNotifier {
   VerificationStatus _verificationStatus = VerificationStatus.pending;
   VerificationStatus get verificationStatus => _verificationStatus;
 
-  /// True only when the vendor's KYC is approved AND their restaurant
-  /// row is `is_active=true`. Dropped `_data.isVerified` because it's
-  /// redundant with `isApproved` (both derive from the same backend
-  /// VendorDocument state) and creates a race condition: the dashboard
-  /// endpoint reads `restaurant.is_verified` BEFORE the profile
-  /// endpoint syncs it, causing a one-refresh lag where the banner
-  /// hides (approved) but the toggle stays locked (isVerified=false).
+  /// True once the vendor has filled in the bare minimum of their
+  /// restaurant profile. Surfaced for the "Complete your setup"
+  /// banner / progress card — NOT used to block the Accepting
+  /// Orders toggle. The web dashboard
+  /// (frontend_pages/vendor/dashboard.html → updateOnlineStatus)
+  /// enables the toggle as soon as the restaurant row exists,
+  /// even at 83% completion with delivery zones missing. The app
+  /// must mirror that — over-gating the toggle blocked vendors
+  /// who couldn't add delivery zones (e.g. when zone creation
+  /// itself was failing) from ever going live.
+  bool get isProfileComplete => _data.profileCompletion >= 100;
+
+  /// True when:
+  ///   1. KYC is approved by admin, AND
+  ///   2. The restaurant row is `is_active=true`.
+  /// Profile completion is intentionally NOT a hard gate here —
+  /// the web vendor portal lets vendors flip "Accepting Orders"
+  /// at any completion %. The Complete-your-Setup banner already
+  /// nudges them to finish missing sections without locking the
+  /// toggle.
   bool get canAcceptOrders =>
       _verificationStatus.isApproved && _data.isActive;
 
@@ -198,8 +213,36 @@ class DashboardViewModel extends ChangeNotifier {
   int _pendingCount = 0;
   int _unreadNotifications = 0;
 
+  StreamSubscription<void>? _sessionClearedSub;
+
   DashboardViewModel({required ApiService apiService})
-      : _apiService = apiService;
+      : _apiService = apiService {
+    // Flush state when the user logs out (explicit or 401) so the
+    // next vendor to sign in doesn't see the previous one's
+    // restaurant name, recent orders, or notification count.
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Reset every field that is tied to the logged-in vendor. Called
+  /// automatically on session clear; safe to call directly as well.
+  void clearSession() {
+    _status = DashboardStatus.initial;
+    _data = const DashboardData();
+    _errorMessage = null;
+    _isToggling = false;
+    _verificationStatus = VerificationStatus.pending;
+    _recentOrders = [];
+    _pendingCount = 0;
+    _unreadNotifications = 0;
+    notifyListeners();
+  }
 
   // ── Getters ──────────────────────────────────────────────────────────────
   DashboardStatus get status => _status;
@@ -266,6 +309,15 @@ class DashboardViewModel extends ChangeNotifier {
       }
     } else if (results[0] is DioException) {
       _errorMessage = _parseError(results[0] as DioException);
+      // Hard failure on the primary dashboard call — most commonly a
+      // 404 "Restaurant not found" when admin deletes the vendor's
+      // restaurant mid-session. Wipe the cached fields so the UI
+      // can't render the deleted restaurant's name/revenue/orders
+      // alongside the retry banner (the visual glitch reported on
+      // 2026-04-21).
+      _data = const DashboardData();
+      _recentOrders = [];
+      _pendingCount = 0;
     }
 
     // ── Parse pending orders count ───────────────────────────────────
@@ -367,6 +419,20 @@ class DashboardViewModel extends ChangeNotifier {
   /// Set store to a specific 3-state status: 'online', 'busy', or 'offline'.
   Future<void> setStoreStatus(String status) async {
     if (_isToggling) return; // prevent double-tap
+    final goingOnline = status == 'online';
+    // Client-side mirror of the backend KYC gate at
+    // vendors/views.py ToggleRestaurantAvailabilityView.post().
+    // Only block going online — the vendor must always be able to go
+    // offline, otherwise a freshly-rejected-docs scenario could trap
+    // them accepting orders. The UI already hides the switch when
+    // locked; this is defense-in-depth for programmatic callers.
+    if (goingOnline && !canAcceptOrders) {
+      _errorMessage = _data.isActive
+          ? 'Verification required. Complete KYC to go online.'
+          : 'Your restaurant is disabled by admin. Contact support.';
+      notifyListeners();
+      return;
+    }
     _isToggling = true;
     _errorMessage = null;
     notifyListeners();
@@ -377,11 +443,31 @@ class DashboardViewModel extends ChangeNotifier {
         data: {
           'store_status': status,
           // Backward compat: backend may still read this field
-          'is_temporarily_closed': status != 'online',
+          'is_temporarily_closed': !goingOnline,
         },
       );
       // Re-fetch to get the server-confirmed state
       await fetchDashboard();
+    } on DioException catch (e) {
+      // Backend rejects go-online attempts while KYC is unapproved
+      // with a 403 whose body is
+      // `{code: 'verification_required', detail: ..., error: <human>}`.
+      // We check `code` (programmatic identifier) rather than `error`
+      // because `error` now carries the human-readable message so web
+      // callers can display it directly.
+      final body = e.response?.data;
+      if (e.response?.statusCode == 403 &&
+          body is Map &&
+          body['code'] == 'verification_required') {
+        _errorMessage = (body['detail'] as String?) ??
+            (body['error'] as String?) ??
+            'Verification required. Complete KYC to go online.';
+        // Re-fetch so the UI re-renders the locked card based on the
+        // now-authoritative verification_status from /vendors/profile/.
+        await fetchDashboard();
+      } else {
+        _errorMessage = 'Failed to update store status. Please try again.';
+      }
     } catch (_) {
       _errorMessage = 'Failed to update store status. Please try again.';
     } finally {
@@ -397,6 +483,14 @@ class DashboardViewModel extends ChangeNotifier {
   }
 
   String _parseError(DioException e) {
+    // 401 leaks through here when the auth interceptor decides not to
+    // retry (e.g. refresh-token rejection). Show a clear, actionable
+    // message instead of the generic "Cannot reach server" text —
+    // vendors were getting stuck on the dashboard banner thinking the
+    // network was down, when really their session had expired.
+    if (e.response?.statusCode == 401) {
+      return 'Session expired. Please log in again.';
+    }
     if (e.response == null) {
       return e.type == DioExceptionType.connectionError
           ? 'Cannot reach server. Is Django running on port 8000?'

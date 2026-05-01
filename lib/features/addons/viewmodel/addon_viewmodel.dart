@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -99,8 +101,29 @@ enum AddonStatus { initial, loading, loaded, error }
 
 class AddonViewModel extends ChangeNotifier {
   final ApiService _api;
+  StreamSubscription<void>? _sessionClearedSub;
 
-  AddonViewModel({required ApiService apiService}) : _api = apiService;
+  AddonViewModel({required ApiService apiService}) : _api = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Flush addon groups so they don't leak from one vendor to the
+  /// next after logout + login on the same device.
+  void clearSession() {
+    _status = AddonStatus.initial;
+    _error = null;
+    _groups = [];
+    _saving = false;
+    _deleting.clear();
+    notifyListeners();
+  }
 
   AddonStatus _status = AddonStatus.initial;
   String? _error;

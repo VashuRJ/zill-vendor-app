@@ -33,8 +33,28 @@ class SupportViewModel extends ChangeNotifier with WidgetsBindingObserver {
       : _apiService = apiService {
     WidgetsBinding.instance.addObserver(this);
     _sessionExpiredSub = ApiService.onSessionExpired.listen((_) {
-      _stopPolling();
+      clearSession();
     });
+  }
+
+  /// Wipe every vendor-scoped field so a logout + new login doesn't
+  /// surface the previous vendor's support chat + past tickets.
+  void clearSession() {
+    _stopPolling();
+    _chatStatus = ChatStatus.idle;
+    _activeSession = null;
+    _messages = [];
+    _pastSessions = [];
+    _faqs = [];
+    _chatError = null;
+    _replyIdLabels.clear();
+    _seenMessageIds.clear();
+    _lastMessageId = '';
+    _ticketDetailStatus = TicketDetailStatus.idle;
+    _ticketDetail = null;
+    _ticketError = null;
+    _wasPollingSuspended = false;
+    notifyListeners();
   }
 
   @override

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -36,14 +37,40 @@ class UploadProgress {
 class KycViewModel extends ChangeNotifier {
   final ApiService _api;
 
+  // GST is OPTIONAL — only restaurants above the ₹40L threshold need
+  // a GSTIN. Web vendor portal (frontend_pages/vendor/documents.html)
+  // already treats it as optional; keeping it here would re-introduce
+  // the "stuck at 3/4" complaint from below-threshold vendors.
   static const List<KycDocumentType> requiredDocumentTypes = [
     KycDocumentType.fssai,
     KycDocumentType.pan,
-    KycDocumentType.gst,
     KycDocumentType.bank,
   ];
 
-  KycViewModel({required ApiService apiService}) : _api = apiService;
+  StreamSubscription<void>? _sessionClearedSub;
+
+  KycViewModel({required ApiService apiService}) : _api = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Reset vendor-scoped state. The KYC document list + verification
+  /// status are per-restaurant; leaving them in place after logout
+  /// would show the previous vendor's uploaded docs to the next user.
+  void clearSession() {
+    _status = KycStatus.initial;
+    _error = null;
+    _documents = [];
+    _verificationStatus = null;
+    _uploadProgress.clear();
+    notifyListeners();
+  }
 
   KycStatus _status = KycStatus.initial;
   String? _error;
@@ -58,8 +85,14 @@ class KycViewModel extends ChangeNotifier {
   String? get error => _error;
   List<KycDocument> get documents => _documents;
   KycVerificationStatus? get verificationStatus => _verificationStatus;
-  int get totalRequiredDocumentCount =>
-      _verificationStatus?.totalRequired ?? requiredDocumentTypes.length;
+  // Source of truth = the app's local required list, not the backend's
+  // `totalRequired` field. The two can disagree during a rolling
+  // deploy: the app dropped GST from required (matching the web vendor
+  // portal) before the backend's verification flow does. Trusting the
+  // server here would render "3 of 4 required" while only 3 cards are
+  // actually shown — vendors then see a perpetually-locked Continue
+  // button. Anchor on what the UI actually renders.
+  int get totalRequiredDocumentCount => requiredDocumentTypes.length;
   int get uploadedRequiredDocumentCount {
     final uploadedTypes = <KycDocumentType>{};
 
@@ -153,7 +186,7 @@ class KycViewModel extends ChangeNotifier {
         'uploaded: $uploadedRequiredDocumentCount/'
         '$totalRequiredDocumentCount, '
         'verified: ${_verificationStatus?.verified ?? 0}/'
-        '${_verificationStatus?.totalRequired ?? 4}',
+        '${requiredDocumentTypes.length}',
       );
     } on DioException catch (e) {
       _error = _parseError(e);

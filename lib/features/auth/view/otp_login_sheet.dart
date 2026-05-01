@@ -583,6 +583,26 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
   int _resendSeconds = 60;
   bool get _canResend => _resendSeconds == 0;
 
+  /// Inline message shown below the Resend row. We use this in addition
+  /// to the parent's snackbar because the OTP entry sits in a modal
+  /// bottom sheet — floating snackbars rendered by the parent Scaffold
+  /// hide behind / under the sheet, so vendors tapped Resend, saw the
+  /// countdown reset to a huge number, and assumed nothing happened.
+  /// This text always lives inside the sheet, above the keyboard.
+  String? _resendNotice;
+  bool _resendNoticeIsError = false;
+
+  /// Pretty wait-window for "Resend in …". Below 60s we keep the
+  /// existing "Xs" style (familiar to users); above 60s we switch to
+  /// "Xm Ys" / "Xm" so a 55-minute backend cool-down doesn't render
+  /// as a baffling "Resend in 3324s".
+  String _formatResendCountdown(int s) {
+    if (s < 60) return '${s}s';
+    final m = s ~/ 60;
+    final r = s % 60;
+    return r == 0 ? '${m}m' : '${m}m ${r}s';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -659,16 +679,45 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
 
   Future<void> _handleResend() async {
     if (!_canResend) return;
+    setState(() {
+      _resendNotice = null; // clear any previous inline message
+    });
     final result = await widget.onResend();
     if (!mounted) return;
     if (result.success) {
       _startResendTimer();
-      widget.showSnack(
-        'OTP resent to ${widget.phone.substring(0, 2)}****${widget.phone.substring(6)}',
-        isError: false,
-      );
+      final masked =
+          '${widget.phone.substring(0, 2)}****${widget.phone.substring(6)}';
+      setState(() {
+        _resendNotice = 'OTP resent to $masked';
+        _resendNoticeIsError = false;
+      });
+      widget.showSnack('OTP resent to $masked', isError: false);
     } else if (result.waitSeconds > 0) {
+      // Rate-limited by backend (HTTP 429). Earlier this branch just
+      // silently restarted the countdown — vendors tapped Resend, saw
+      // nothing happen, and assumed the button was broken. Now we
+      // restart the timer AND surface a clear message both inline
+      // (visible inside the sheet) and via parent snackbar.
       _startResendTimer(result.waitSeconds);
+      final mins = (result.waitSeconds / 60).ceil();
+      final msg = mins >= 2
+          ? 'Too many OTP requests. Try again in ~$mins minutes.'
+          : 'Too many OTP requests. Try again in ${result.waitSeconds}s.';
+      setState(() {
+        _resendNotice = msg;
+        _resendNoticeIsError = true;
+      });
+      widget.showSnack(msg, isError: true);
+    } else {
+      // Generic failure — server said no but didn't give a wait
+      // window. Don't leave the user staring at a dead button.
+      const msg = 'Could not resend OTP. Please try again.';
+      setState(() {
+        _resendNotice = msg;
+        _resendNoticeIsError = true;
+      });
+      widget.showSnack(msg, isError: true);
     }
   }
 
@@ -812,7 +861,9 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
             GestureDetector(
               onTap: _canResend ? _handleResend : null,
               child: Text(
-                _canResend ? 'Resend OTP' : 'Resend in ${_resendSeconds}s',
+                _canResend
+                    ? 'Resend OTP'
+                    : 'Resend in ${_formatResendCountdown(_resendSeconds)}',
                 style: GoogleFonts.poppins(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w700,
@@ -822,6 +873,24 @@ class _OtpVerifyViewState extends State<_OtpVerifyView> {
             ),
           ],
         ),
+        // Inline notice — surfaces the resend result inside the sheet
+        // so the user always sees what happened, even when the parent
+        // snackbar is hidden behind the modal sheet.
+        if (_resendNotice != null) ...[
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              _resendNotice!,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: _resendNoticeIsError ? _error : _success,
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
 
         Center(

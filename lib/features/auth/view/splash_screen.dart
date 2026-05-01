@@ -131,7 +131,17 @@ class _SplashScreenState extends State<SplashScreen>
     if (authVM.isAuthenticated) {
       final requiresSetup = await authVM.requiresSetupOnboarding();
       if (!mounted || _navigated) return;
-      targetRoute = requiresSetup ? '/setup-onboarding' : '/home';
+      // Re-check `isAuthenticated` AFTER the onboarding API call —
+      // if any of those requests returned 401, the auth interceptor
+      // would have fired its `onSessionExpired` stream and flipped
+      // the view-model to unauthenticated. Without this re-check we
+      // would race past it and push /home with a dead session,
+      // leaving the vendor stuck on a "Cannot reach server" banner.
+      if (!authVM.isAuthenticated) {
+        targetRoute = '/login';
+      } else {
+        targetRoute = requiresSetup ? '/setup-onboarding' : '/home';
+      }
     }
 
     _navigated = true;

@@ -2,6 +2,8 @@
 // Zill Restaurant Partner — Vendor App
 // Author: Vashu Mogha (@Its-vashu)
 // ─────────────────────────────────────────
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -26,6 +28,18 @@ class AuthViewModel extends ChangeNotifier {
   String? _errorMessage;
   String? _username;
 
+  /// Listens to the API service's session-expired stream so that when
+  /// the auth interceptor force-logs-out (refresh token rejected,
+  /// session blacklisted on backend, etc.), this view-model's
+  /// `_status` flips to unauthenticated. Without this subscription
+  /// the splash screen could call `checkAuthStatus()` (sees tokens →
+  /// authenticated), then `requiresSetupOnboarding()` triggers a 401,
+  /// the interceptor pushes /login while `_status` is STILL
+  /// authenticated, and the splash races by pushing /home — leaving
+  /// the vendor stuck on a "Cannot reach server" dashboard until
+  /// they kill the app. (Apr 2026 incident.)
+  StreamSubscription<void>? _sessionExpiredSub;
+
   AuthViewModel({
     required ApiService apiService,
     required StorageService storageService,
@@ -36,6 +50,26 @@ class AuthViewModel extends ChangeNotifier {
        _pushService = pushService,
        _wsService = wsService {
     _setupOnboardingService = SetupOnboardingService(apiService: _apiService);
+    _sessionExpiredSub =
+        ApiService.onSessionExpired.listen((_) => _markSessionExpired());
+  }
+
+  @override
+  void dispose() {
+    _sessionExpiredSub?.cancel();
+    super.dispose();
+  }
+
+  /// Called whenever the API interceptor decides the session is dead
+  /// (after a refresh-token rejection). Storage is already cleared by
+  /// the interceptor; we only need to update our own `_status` so any
+  /// caller that re-reads `isAuthenticated` after their pending API
+  /// call returns sees `false` and routes the user to /login.
+  void _markSessionExpired() {
+    if (_status == AuthStatus.unauthenticated) return;
+    _status = AuthStatus.unauthenticated;
+    _username = null;
+    notifyListeners();
   }
 
   // Getters
@@ -119,6 +153,11 @@ class AuthViewModel extends ChangeNotifier {
       // logged-out vendor's orders and must not leak into the
       // next session.
       await OrderTimerStore.instance.clearAll();
+      // Broadcast so every feature ViewModel flushes its in-memory
+      // state. Without this, the next vendor to log in on this device
+      // sees the previous vendor's dashboard / recent orders / menu.
+      // (Regression fix for the 2026-04-21 privacy incident.)
+      ApiService.fireSessionCleared();
       _username = null;
       _status = AuthStatus.unauthenticated;
       notifyListeners();

@@ -240,33 +240,139 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
         // ── Billing cycle toggle ────────────────────────────────────
         _buildBillingToggle(vm),
 
-        // ── Plans list ──────────────────────────────────────────────
+        // ── Plans list (or empty-state if nothing came back) ────────
+        // The fetch can resolve to `loaded` with an empty list — e.g.
+        // a transient backend hiccup, no active plans seeded, or a
+        // shape change that quietly produced zero rows. Without a
+        // dedicated empty branch the screen used to render just the
+        // toggle on a blank canvas, leaving the vendor with no path
+        // forward (and no Retry).
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(
-              AppSizes.md,
-              AppSizes.sm,
-              AppSizes.md,
-              AppSizes.xxl,
-            ),
-            itemCount: vm.plans.length,
-            itemBuilder: (context, index) {
-              final plan = vm.plans[index];
-              final isCurrentPlan = vm.mySubscription?.planId == plan.planId;
-              final isMostPopular = _isMostPopularPlan(plan);
-              return _PlanCard(
-                plan: plan,
-                isAnnual: vm.showAnnual,
-                isCurrentPlan: isCurrentPlan,
-                isMostPopular: isMostPopular,
-                isSubscribing: vm.isSubscribing,
-                onSubscribe: () => _handleSubscribe(plan),
-              );
-            },
-          ),
+          child: vm.plans.isEmpty
+              ? _buildEmptyPlans(vm)
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSizes.md,
+                    AppSizes.sm,
+                    AppSizes.md,
+                    AppSizes.xxl,
+                  ),
+                  itemCount: vm.plans.length,
+                  itemBuilder: (context, index) {
+                    final plan = vm.plans[index];
+                    final isCurrentPlan =
+                        vm.mySubscription?.planId == plan.planId;
+                    final isMostPopular = _isMostPopularPlan(plan);
+                    // Only spin the tapped card; other cards stay
+                    // visible but get their buttons disabled via
+                    // `anyPlanSubscribing` so the user can't start a
+                    // second subscribe while one is in-flight (the
+                    // VM's double-tap guard would reject it anyway,
+                    // but we want that visually clear).
+                    return _PlanCard(
+                      plan: plan,
+                      isAnnual: vm.showAnnual,
+                      isCurrentPlan: isCurrentPlan,
+                      isMostPopular: isMostPopular,
+                      isSubscribingThisPlan: vm.isSubscribingPlan(plan.id),
+                      anyPlanSubscribing: vm.isSubscribing,
+                      onSubscribe: () => _handleSubscribe(plan),
+                    );
+                  },
+                ),
         ),
       ],
     );
+  }
+
+  /// Empty state for `_buildContent`.
+  ///
+  /// Subscription is the last gate in the onboarding flow, but admin
+  /// occasionally pulls plans offline (price changes, cleanup, GST
+  /// re-config). Without an escape hatch the vendor is dead-stuck on
+  /// this screen — KYC done, can't reach the dashboard, can't take
+  /// orders. So when plans come back empty we expose:
+  ///   • Primary CTA → "Continue to dashboard" (skip the gate; they
+  ///     can subscribe later from Profile once admin re-enables plans)
+  ///   • Secondary  → "Retry" (cheap re-fetch in case it was a hiccup)
+  Widget _buildEmptyPlans(SubscriptionViewModel vm) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSizes.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.workspace_premium_outlined,
+              size: 56,
+              color: AppColors.textHint,
+            ),
+            const SizedBox(height: AppSizes.md),
+            const Text(
+              'No subscription plans right now',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: AppSizes.fontLg,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: AppSizes.xs),
+            const Text(
+              'You can continue to your dashboard and subscribe later '
+              'from Profile when plans are available.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: AppSizes.fontSm,
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: AppSizes.lg),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => _continueWithoutSubscription(),
+                icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                label: const Text('Continue to dashboard'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.textOnPrimary,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: AppSizes.md,
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: AppSizes.fontMd,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: AppSizes.sm),
+            TextButton.icon(
+              onPressed: vm.isLoading ? null : vm.fetchPlans,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: Text(vm.isLoading ? 'Loading…' : 'Retry'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Skip the subscription gate when plans are unavailable. Routes
+  /// straight to /home with `pushNamedAndRemoveUntil` so the back
+  /// stack doesn't keep stale onboarding screens around — once the
+  /// vendor lands on the dashboard, swipe-back should not pop them
+  /// back into the empty plans page.
+  void _continueWithoutSubscription() {
+    if (!mounted) return;
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil('/home', (route) => false);
   }
 
   String? _maxSavingsBadge(SubscriptionViewModel vm) {
@@ -395,7 +501,13 @@ class _PlanCard extends StatelessWidget {
   final bool isAnnual;
   final bool isCurrentPlan;
   final bool isMostPopular;
-  final bool isSubscribing;
+  /// True only when THIS plan is the one being subscribed to — drives
+  /// the spinner. Keeping it per-card fixes the bug where all cards
+  /// rendered a spinner because a single shared bool was passed in.
+  final bool isSubscribingThisPlan;
+  /// True while ANY plan's subscribe is in flight — disables all other
+  /// plan buttons so only the tapped one is interactive.
+  final bool anyPlanSubscribing;
   final VoidCallback onSubscribe;
 
   const _PlanCard({
@@ -403,12 +515,20 @@ class _PlanCard extends StatelessWidget {
     required this.isAnnual,
     required this.isCurrentPlan,
     required this.isMostPopular,
-    required this.isSubscribing,
+    required this.isSubscribingThisPlan,
+    required this.anyPlanSubscribing,
     required this.onSubscribe,
   });
 
   @override
   Widget build(BuildContext context) {
+    // Pricing display follows the web vendor portal
+    // (frontend_pages/vendor/subscription.html → renderPlans).
+    // For monthly plans the prominent figure is the *base* price
+    // (₹199, ₹499, ₹888) and the GST-inclusive total goes underneath
+    // as a hint. Showing the GST-inclusive figure as the headline made
+    // the plans look 18% more expensive than the marketing pages
+    // ("Basic ₹234.82" instead of "Basic ₹199").
     final priceToPay = isAnnual
         ? (plan.annualTotal ?? (plan.monthlyTotal * 12))
         : plan.monthlyTotal;
@@ -417,10 +537,10 @@ class _PlanCard extends StatelessWidget {
     final monthlyGst = priceToPay - monthlyBase;
     final prominentPrice = isAnnual
         ? '₹${annualMonthlyEquivalent.toStringAsFixed(2)}'
-        : '₹${priceToPay.toStringAsFixed(2)}';
+        : '₹${monthlyBase.toStringAsFixed(2)}';
     final priceHint = isAnnual
         ? 'Billed ₹${priceToPay.toStringAsFixed(2)} annually (incl. GST)'
-        : 'Base: ₹${monthlyBase.toStringAsFixed(2)} + GST: ₹${monthlyGst.toStringAsFixed(2)}';
+        : '+ 18% GST (₹${monthlyGst.toStringAsFixed(2)}) = ₹${priceToPay.toStringAsFixed(2)} total';
 
     return Container(
       margin: EdgeInsets.only(bottom: AppSizes.md, top: isMostPopular ? 12 : 0),
@@ -460,90 +580,93 @@ class _PlanCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Title row — plan name + (optional) "CURRENT PLAN"
+                  // pill. Stacked above the price (web layout) so a
+                  // wide price like ₹588.82 can't squeeze the title
+                  // column to the point where "Basic" wraps one
+                  // character per line.
                   Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    plan.name,
-                                    style: const TextStyle(
-                                      fontSize: AppSizes.fontXxl,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textPrimary,
-                                    ),
-                                  ),
-                                ),
-                                if (isCurrentPlan)
-                                  Container(
-                                    margin: const EdgeInsets.only(
-                                      left: AppSizes.sm,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.successLight,
-                                      borderRadius: BorderRadius.circular(
-                                        AppSizes.radiusFull,
-                                      ),
-                                    ),
-                                    child: const Text(
-                                      'CURRENT PLAN',
-                                      style: TextStyle(
-                                        fontSize: AppSizes.fontXs,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.success,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            if (plan.description.isNotEmpty) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                plan.description,
-                                style: const TextStyle(
-                                  fontSize: AppSizes.fontSm,
-                                  color: AppColors.textSecondary,
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ],
+                        child: Text(
+                          plan.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontXxl,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: AppSizes.sm),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            prominentPrice,
-                            style: const TextStyle(
-                              fontSize: AppSizes.fontHeading,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.primary,
+                      if (isCurrentPlan)
+                        Container(
+                          margin: const EdgeInsets.only(left: AppSizes.sm),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.successLight,
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.radiusFull,
                             ),
                           ),
-                          Text(
-                            isAnnual ? '/mo' : '/month',
-                            style: const TextStyle(
-                              fontSize: AppSizes.fontSm,
-                              color: AppColors.textSecondary,
+                          child: const Text(
+                            'CURRENT PLAN',
+                            style: TextStyle(
+                              fontSize: AppSizes.fontXs,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.success,
                             ),
                           ),
-                        ],
-                      ),
+                        ),
                     ],
                   ),
+                  if (plan.description.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      plan.description,
+                      style: const TextStyle(
+                        fontSize: AppSizes.fontSm,
+                        color: AppColors.textSecondary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
 
+                  const SizedBox(height: AppSizes.sm),
+                  // Price line — base amount + period suffix.
+                  // FittedBox guards against very long prices on small
+                  // screens (annual totals, GST-inclusive figures).
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text(
+                          prominentPrice,
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontHeading,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          isAnnual ? '/mo' : '/month',
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontSm,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   const SizedBox(height: AppSizes.xs),
                   Text(
                     priceHint,
@@ -642,9 +765,8 @@ class _PlanCard extends StatelessWidget {
                     width: double.infinity,
                     height: AppSizes.buttonHeight,
                     child: ElevatedButton(
-                      onPressed: isCurrentPlan || isSubscribing
-                          ? null
-                          : onSubscribe,
+                      onPressed:
+                          isCurrentPlan || anyPlanSubscribing ? null : onSubscribe,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: isCurrentPlan
                             ? AppColors.success
@@ -661,7 +783,7 @@ class _PlanCard extends StatelessWidget {
                         ),
                         elevation: isCurrentPlan ? 0 : 2,
                       ),
-                      child: isSubscribing
+                      child: isSubscribingThisPlan
                           ? const SizedBox(
                               height: 22,
                               width: 22,

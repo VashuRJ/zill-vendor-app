@@ -157,27 +157,78 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
 
   Widget _buildSubscriptionDetails(SubscriptionViewModel vm) {
     final sub = vm.mySubscription!;
+    // Backend tells us whether any plan is currently active. When the
+    // global pause is on we hide pricing / billing dates and surface
+    // a clear banner so existing paying vendors aren't confused
+    // (and so they know they aren't being charged while new sign-ups
+    // skip the gate entirely). The same flag also prevents the
+    // backend renewal cron from charging — see process_subscription_renewals.py.
+    final paused = !vm.subscriptionsEnabled;
+
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: vm.fetchMySubscription,
       child: ListView(
         padding: const EdgeInsets.all(AppSizes.md),
         children: [
+          if (paused) ...[
+            _buildPausedBanner(),
+            const SizedBox(height: AppSizes.md),
+          ],
+
           // ── Status + Days remaining card ───────────────────────
           _buildStatusCard(sub),
           const SizedBox(height: AppSizes.md),
 
           // ── Plan details card ─────────────────────────────────
-          _buildPlanDetailsCard(sub),
+          _buildPlanDetailsCard(sub, paused: paused),
           const SizedBox(height: AppSizes.md),
 
           // ── Auto-renew toggle ─────────────────────────────────
-          _buildAutoRenewCard(sub),
+          _buildAutoRenewCard(sub, paused: paused),
           const SizedBox(height: AppSizes.md),
 
           // ── Quick actions ─────────────────────────────────────
           _buildActionsCard(sub, vm),
           const SizedBox(height: AppSizes.xxl),
+        ],
+      ),
+    );
+  }
+
+  /// Top-of-screen notice explaining the pause. Soft warning tone so
+  /// it reads as informational, not as something the vendor needs to
+  /// fix on their end. Wording explicitly says they will not be
+  /// charged — that's the whole point of the banner.
+  Widget _buildPausedBanner() {
+    return Container(
+      padding: const EdgeInsets.all(AppSizes.md),
+      decoration: BoxDecoration(
+        color: AppColors.warning.withAlpha(24),
+        borderRadius: BorderRadius.circular(AppSizes.radiusLg),
+        border: Border.all(color: AppColors.warning.withAlpha(80)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.pause_circle_outline_rounded,
+            color: AppColors.warning,
+            size: 22,
+          ),
+          const SizedBox(width: AppSizes.sm),
+          const Expanded(
+            child: Text(
+              'Subscription plans are temporarily paused. You won\'t be '
+              'charged on your renewal date — we\'ll notify you when '
+              'plans become available again.',
+              style: TextStyle(
+                fontSize: AppSizes.fontSm,
+                color: AppColors.textPrimary,
+                height: 1.4,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -293,7 +344,7 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
 
   // ── Plan details card ─────────────────────────────────────────────────
 
-  Widget _buildPlanDetailsCard(VendorSubscription sub) {
+  Widget _buildPlanDetailsCard(VendorSubscription sub, {bool paused = false}) {
     return Container(
       padding: const EdgeInsets.all(AppSizes.lg),
       decoration: BoxDecoration(
@@ -314,10 +365,21 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
           ),
           const SizedBox(height: AppSizes.md),
           _detailRow('Billing Cycle', _billingCycleLabel(sub.billingCycle)),
-          _detailRow('Price', _currencyFormat.format(sub.currentPrice)),
-          _detailRow('GST', _currencyFormat.format(sub.currentGst)),
-          _detailRow('Total', _currencyFormat.format(sub.currentTotal),
-              bold: true),
+          // Hide the live pricing rows while plans are paused — showing
+          // ₹199 + GST ₹36 + Total ₹235 implies an upcoming charge,
+          // which is exactly what we want to dispel. Keep informational
+          // rows (Start Date, Trial Ends, Payment Method) so the vendor
+          // still has context on their account.
+          if (!paused) ...[
+            _detailRow('Price', _currencyFormat.format(sub.currentPrice)),
+            _detailRow('GST', _currencyFormat.format(sub.currentGst)),
+            _detailRow(
+              'Total',
+              _currencyFormat.format(sub.currentTotal),
+              bold: true,
+            ),
+          ] else
+            _detailRow('Pricing', 'Paused', bold: true),
           if (sub.startDate != null)
             _detailRow('Start Date', _dateFormat.format(sub.startDate!)),
           if (sub.trialEndDate != null && sub.isTrial)
@@ -361,8 +423,31 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
 
   // ── Auto-renew card ───────────────────────────────────────────────────
 
-  Widget _buildAutoRenewCard(VendorSubscription sub) {
+  Widget _buildAutoRenewCard(VendorSubscription sub, {bool paused = false}) {
+    // While plans are paused the underlying `auto_renew=true` is still
+    // truthful but won't actually charge — the renewal cron exits
+    // early. Showing a green "ON" badge in that state would be
+    // misleading. Render a neutral "Paused" badge with explanatory
+    // copy instead, so the vendor sees the same message everywhere.
     final isAutoRenew = sub.autoRenew && !sub.cancelAtPeriodEnd;
+    final badgeLabel = paused ? 'Paused' : (isAutoRenew ? 'ON' : 'OFF');
+    final badgeColor = paused
+        ? AppColors.warning
+        : (isAutoRenew ? AppColors.success : AppColors.warning);
+    final iconColor = paused
+        ? AppColors.warning
+        : (isAutoRenew ? AppColors.success : AppColors.textHint);
+    final subtitle = paused
+        ? 'Renewal is paused while plans are unavailable'
+        : isAutoRenew
+            ? 'Your plan will renew automatically'
+            : 'Cancelled — will not renew';
+    final subtitleColor = paused
+        ? AppColors.warning
+        : isAutoRenew
+            ? AppColors.textSecondary
+            : AppColors.warning;
+
     return Container(
       padding: const EdgeInsets.symmetric(
         horizontal: AppSizes.lg,
@@ -376,8 +461,8 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
       child: Row(
         children: [
           Icon(
-            Icons.autorenew,
-            color: isAutoRenew ? AppColors.success : AppColors.textHint,
+            paused ? Icons.pause_circle_outline_rounded : Icons.autorenew,
+            color: iconColor,
             size: 22,
           ),
           const SizedBox(width: AppSizes.md),
@@ -395,14 +480,10 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  isAutoRenew
-                      ? 'Your plan will renew automatically'
-                      : 'Cancelled — will not renew',
+                  subtitle,
                   style: TextStyle(
                     fontSize: AppSizes.fontSm,
-                    color: isAutoRenew
-                        ? AppColors.textSecondary
-                        : AppColors.warning,
+                    color: subtitleColor,
                   ),
                 ),
               ],
@@ -411,17 +492,15 @@ class _MySubscriptionScreenState extends State<MySubscriptionScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: isAutoRenew
-                  ? AppColors.success.withAlpha(20)
-                  : AppColors.warning.withAlpha(20),
+              color: badgeColor.withAlpha(20),
               borderRadius: BorderRadius.circular(AppSizes.radiusFull),
             ),
             child: Text(
-              isAutoRenew ? 'ON' : 'OFF',
+              badgeLabel,
               style: TextStyle(
                 fontSize: AppSizes.fontSm,
                 fontWeight: FontWeight.w700,
-                color: isAutoRenew ? AppColors.success : AppColors.warning,
+                color: badgeColor,
               ),
             ),
           ),

@@ -655,10 +655,24 @@ class _ZoneEditorSheetState extends State<_ZoneEditorSheet> {
       text: z?.estimatedDeliveryTime.toString() ?? '',
     );
     _isActive = z?.isActive ?? true;
+
+    // Re-render the "Minimum allowed: ₹X" hint as the vendor types
+    // either the max distance or the fee. Web does the same on every
+    // input event so the constraint is visible while typing instead
+    // of only on submit (frontend_pages/vendor/delivery-zones.html →
+    // updateMinFeeHint).
+    _maxDistCtrl.addListener(_onGuardrailInputChanged);
+    _feeCtrl.addListener(_onGuardrailInputChanged);
+  }
+
+  void _onGuardrailInputChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _maxDistCtrl.removeListener(_onGuardrailInputChanged);
+    _feeCtrl.removeListener(_onGuardrailInputChanged);
     _nameCtrl.dispose();
     _minDistCtrl.dispose();
     _maxDistCtrl.dispose();
@@ -672,6 +686,33 @@ class _ZoneEditorSheetState extends State<_ZoneEditorSheet> {
     if (!_formKey.currentState!.validate()) return;
 
     final vm = context.read<DeliveryZoneViewModel>();
+
+    // Pre-submit guardrail check — same formula as backend, runs
+    // BEFORE we hit the API so the vendor gets an instant, clear
+    // explanation instead of a snackbar that disappears in 3 sec.
+    // Web does this in saveZone() before fetch (delivery-zones.html
+    // ~line 1665).
+    final maxDist = double.tryParse(_maxDistCtrl.text.trim());
+    final fee = double.tryParse(_feeCtrl.text.trim());
+    if (maxDist != null && fee != null) {
+      final minRequired = vm.feeGuardrail.minRequiredFee(maxDist);
+      if (fee < minRequired) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Minimum allowed fee for ${maxDist.toStringAsFixed(1)} km zone '
+              'is ₹${minRequired.toStringAsFixed(2)} (covers delivery '
+              'partner cost at max distance).',
+            ),
+            backgroundColor: AppColors.error,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+        return;
+      }
+    }
+
     final zone = DeliveryZone(
       id: widget.zone?.id ?? 0,
       zoneName: _nameCtrl.text.trim(),
@@ -823,6 +864,15 @@ class _ZoneEditorSheetState extends State<_ZoneEditorSheet> {
                     ),
                   ),
                 ],
+              ),
+              // Live "Minimum allowed" hint — turns red when the
+              // typed fee falls below the DP-cost floor. Same UX as
+              // the web vendor portal so vendors aren't surprised by
+              // a 400 from the backend.
+              _MinFeeHint(
+                maxDistanceText: _maxDistCtrl.text,
+                feeText: _feeCtrl.text,
+                guardrail: context.watch<DeliveryZoneViewModel>().feeGuardrail,
               ),
               const SizedBox(height: 14),
 
@@ -1046,5 +1096,58 @@ class _ZoneEditorSheetState extends State<_ZoneEditorSheet> {
     if (double.tryParse(v.trim()) == null) return 'Invalid';
     if (double.parse(v.trim()) <= 0) return 'Must be > 0';
     return null;
+  }
+}
+
+/// Live "Minimum allowed: ₹X" hint shown directly under the
+/// Delivery Fee input. Mirrors the web vendor portal's
+/// `updateMinFeeHint()` (frontend_pages/vendor/delivery-zones.html).
+/// Hidden until a valid max-distance is typed; turns red when the
+/// fee falls below the floor.
+class _MinFeeHint extends StatelessWidget {
+  final String maxDistanceText;
+  final String feeText;
+  final FeeGuardrail guardrail;
+
+  const _MinFeeHint({
+    required this.maxDistanceText,
+    required this.feeText,
+    required this.guardrail,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final maxDist = double.tryParse(maxDistanceText.trim());
+    if (maxDist == null || maxDist <= 0) {
+      return const SizedBox.shrink();
+    }
+    final minRequired = guardrail.minRequiredFee(maxDist);
+    final fee = double.tryParse(feeText.trim());
+    final ok = fee != null && fee >= minRequired;
+    final color = ok ? AppColors.success : AppColors.error;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Icon(
+            ok ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Minimum allowed: ₹${minRequired.toStringAsFixed(2)} '
+              '(covers DP cost at ${maxDist.toStringAsFixed(1)} km)',
+              style: TextStyle(
+                fontSize: 12,
+                color: color,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

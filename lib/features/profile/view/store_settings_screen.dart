@@ -15,7 +15,6 @@ class StoreSettingsScreen extends StatefulWidget {
 
 class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _deliveryFeeCtrl;
   late final TextEditingController _minOrderCtrl;
   late final TextEditingController _freeDeliveryAboveCtrl;
   late final TextEditingController _radiusCtrl;
@@ -25,7 +24,6 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _deliveryFeeCtrl = TextEditingController();
     _minOrderCtrl = TextEditingController();
     _freeDeliveryAboveCtrl = TextEditingController();
     _radiusCtrl = TextEditingController();
@@ -37,7 +35,6 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
 
   @override
   void dispose() {
-    _deliveryFeeCtrl.dispose();
     _minOrderCtrl.dispose();
     _freeDeliveryAboveCtrl.dispose();
     _radiusCtrl.dispose();
@@ -46,7 +43,6 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
 
   void _populate(StoreSettingsData s) {
     if (_populated) return;
-    _deliveryFeeCtrl.text = s.deliveryFee.toStringAsFixed(0);
     _minOrderCtrl.text = s.minimumOrderAmount.toStringAsFixed(0);
     _freeDeliveryAboveCtrl.text =
         s.freeDeliveryAbove != null && s.freeDeliveryAbove! > 0
@@ -61,7 +57,6 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
     final vm = context.read<ProfileViewModel>();
 
     final success = await vm.updateStoreSettings(
-      deliveryFee: double.parse(_deliveryFeeCtrl.text.trim()),
       minimumOrderAmount: double.parse(_minOrderCtrl.text.trim()),
       freeDeliveryAbove: _freeDeliveryAboveCtrl.text.trim().isEmpty
           ? null
@@ -238,20 +233,16 @@ class _StoreSettingsScreenState extends State<StoreSettingsScreen> {
                             title: 'Delivery Pricing',
                           ),
                           const SizedBox(height: 10),
+                          // Delivery fee is platform-controlled (backend
+                          // `ToggleRestaurantAvailabilityView` / profile
+                          // update silently ignore a submitted value).
+                          // Showing the old input would mislead vendors
+                          // into thinking they can undercut the platform
+                          // default (₹50 base + ₹8/km, capped ₹150).
+                          const _PlatformPricingBanner(),
+                          const SizedBox(height: 10),
                           _Card(
                             children: [
-                              _FieldTile(
-                                icon: Icons.currency_rupee_rounded,
-                                iconColor: AppColors.success,
-                                label: 'Base Delivery Fee',
-                                description: 'Flat delivery charge per order',
-                                child: _StyledField(
-                                  controller: _deliveryFeeCtrl,
-                                  hint: 'e.g. 30',
-                                  prefix: '₹',
-                                  validator: _requiredAmount,
-                                ),
-                              ),
                               _FieldTile(
                                 icon: Icons.shopping_bag_rounded,
                                 iconColor: const Color(0xFF6C5CE7),
@@ -491,15 +482,10 @@ class _QuickStats extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Delivery fee chip removed — platform controls pricing; the old
+    // chip would show the stale (always ₹0 post-migration) value.
     return Row(
       children: [
-        _StatChip(
-          icon: Icons.delivery_dining_rounded,
-          color: AppColors.primary,
-          label: 'Fee',
-          value: '₹${settings.deliveryFee.toStringAsFixed(0)}',
-        ),
-        const SizedBox(width: 10),
         _StatChip(
           icon: Icons.shopping_bag_rounded,
           color: const Color(0xFF6C5CE7),
@@ -514,6 +500,62 @@ class _QuickStats extends StatelessWidget {
           value: '${settings.deliveryRadiusKm.toStringAsFixed(1)} km',
         ),
       ],
+    );
+  }
+}
+
+/// Info banner shown where the per-restaurant delivery fee input used
+/// to be. Explains that pricing is centralized so vendors aren't
+/// confused by the missing field.
+class _PlatformPricingBanner extends StatelessWidget {
+  const _PlatformPricingBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSizes.md),
+      decoration: BoxDecoration(
+        color: AppColors.success.withAlpha(16),
+        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+        border: Border.all(color: AppColors.success.withAlpha(60)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.verified_rounded,
+            size: 20,
+            color: AppColors.success,
+          ),
+          const SizedBox(width: AppSizes.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Delivery pricing is managed by Zill',
+                  style: TextStyle(
+                    fontSize: AppSizes.fontMd,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Customers pay ₹50 base (0–3 km) + ₹8/km, capped at '
+                  '₹150. You keep your full order total — delivery fee '
+                  'goes to the platform and delivery partner.',
+                  style: TextStyle(
+                    fontSize: AppSizes.fontSm,
+                    height: 1.4,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

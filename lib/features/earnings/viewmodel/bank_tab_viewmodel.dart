@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -79,8 +81,13 @@ enum PayoutRequestStatus { idle, requesting, success, error }
 class BankTabViewModel extends ChangeNotifier {
   final ApiService _apiService;
   bool _isDisposed = false;
+  StreamSubscription<void>? _sessionClearedSub;
 
-  BankTabViewModel({required ApiService apiService}) : _apiService = apiService;
+  BankTabViewModel({required ApiService apiService})
+      : _apiService = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
 
   /// Expose the API service for child navigations (e.g. TransactionsScreen).
   ApiService get apiService => _apiService;
@@ -92,8 +99,44 @@ class BankTabViewModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _sessionClearedSub?.cancel();
     _isDisposed = true;
     super.dispose();
+  }
+
+  /// Reset every vendor-scoped field. Earnings + bank details +
+  /// settlement history must never carry over from a logged-out
+  /// vendor — this is financial PII and leaking it across accounts
+  /// is a compliance hazard on top of the privacy harm.
+  void clearSession() {
+    _status = BankTabStatus.fetching;
+    _summary = null;
+    _earningsError = null;
+    _bankData = null;
+    _bankLoading = true;
+    _bankError = null;
+    _bankSaving = false;
+    _bankSaveError = null;
+    _payouts = [];
+    _payoutsLoading = true;
+    _payoutsError = null;
+    _totalPayouts = 0;
+    _payoutReqStatus = PayoutRequestStatus.idle;
+    _payoutReqError = null;
+    _settlements = [];
+    _totalSettlements = 0;
+    _isLoadingMore = false;
+    _currentPage = 1;
+    _hasMore = true;
+    _selectedFilter = 'This Month';
+    _customDateRange = null;
+    _vendorTotalEarnings = 0.0;
+    _vendorTotalOrders = 0;
+    _vendorAvgOrderValue = 0.0;
+    _periodStats = {};
+    _chartDayData = [];
+    _vendorRecentTransactions = [];
+    _notify();
   }
 
   // ── Earnings state ──────────────────────────────────────────────────

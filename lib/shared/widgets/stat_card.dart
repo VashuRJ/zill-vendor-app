@@ -14,6 +14,10 @@ class StatCard extends StatelessWidget {
   // Kept for backward-compat; no longer used for full background.
   // The first color (if provided) is used as the accent color instead of iconColor.
   final List<Color>? gradient;
+  /// Optional explanation shown when the user taps the info icon next
+  /// to the title. Used to clarify e.g. "Gross Sales = subtotal of
+  /// paid orders; commission + GST are deducted at weekly settlement."
+  final String? infoMessage;
 
   const StatCard({
     super.key,
@@ -24,6 +28,7 @@ class StatCard extends StatelessWidget {
     this.iconBackgroundColor,
     this.subtitle,
     this.gradient,
+    this.infoMessage,
   });
 
   Color get _accent =>
@@ -85,14 +90,45 @@ class StatCard extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
           ),
           const SizedBox(height: 2),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppColors.textSecondary,
+          Row(
+            children: [
+              Flexible(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                  overflow: TextOverflow.ellipsis,
                 ),
+              ),
+              if (infoMessage != null)
+                GestureDetector(
+                  onTap: () => _showInfo(context),
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 4),
+                    child: Icon(
+                      Icons.info_outline_rounded,
+                      size: 13,
+                      color: AppColors.textHint,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  void _showInfo(BuildContext context) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(infoMessage ?? ''),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 5),
+        ),
+      );
   }
 }

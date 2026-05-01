@@ -267,9 +267,28 @@ class OrdersViewModel extends ChangeNotifier {
 
   OrdersViewModel({required ApiService apiService}) : _api = apiService {
     _sessionExpiredSub = ApiService.onSessionExpired.listen((_) {
-      AppLogger.w('[Orders] Session expired — stopping auto-refresh');
-      stopAutoRefresh();
+      AppLogger.w('[Orders] Session cleared — stopping polling + wiping state');
+      clearSession();
     });
+  }
+
+  /// Reset every vendor-scoped field. Called on explicit logout AND
+  /// on 401 so the next signed-in vendor never sees the previous
+  /// one's order lists or active-order badge count.
+  void clearSession() {
+    stopAutoRefresh();
+    _wsSub?.cancel();
+    _wsSub = null;
+    _status = OrdersStatus.initial;
+    _error = null;
+    _newOrders = [];
+    _preparingOrders = [];
+    _readyOrders = [];
+    _completedOrders = [];
+    _cancelledOrders = [];
+    _actionLoading.clear();
+    _lastErrorCode = null;
+    notifyListeners();
   }
 
   // ── WebSocket integration ──────────────────────────────────────────
@@ -727,17 +746,65 @@ class OrdersViewModel extends ChangeNotifier {
   );
 
   // ── Fetch full order detail (/orders/{id}/) ───────────────────────
+  /// Last reason `fetchOrderDetail` failed — populated by the next
+  /// fetch and consumed by the UI to render a specific error string
+  /// instead of the older generic "Could not load order details" line.
+  /// Keeping it on the VM (not the call site) means follow-up retries
+  /// can pick up the new error too.
+  String? _lastDetailError;
+  String? get lastDetailError => _lastDetailError;
+
   Future<VendorOrderDetail?> fetchOrderDetail(int orderId) async {
+    _lastDetailError = null;
     try {
       final response = await _api.get(ApiEndpoints.orderDetail(orderId));
       final data = response.data;
-      if (data is! Map<String, dynamic>) return null;
+      if (data is! Map<String, dynamic>) {
+        _lastDetailError =
+            'Server returned an unexpected response (${data.runtimeType}).';
+        AppLogger.e(
+          'fetchOrderDetail($orderId): non-map body type=${data.runtimeType}',
+        );
+        return null;
+      }
       return VendorOrderDetail.fromJson(data);
     } on DioException catch (e) {
-      AppLogger.e('fetchOrderDetail($orderId): HTTP ${e.response?.statusCode}');
+      final code = e.response?.statusCode;
+      final body = e.response?.data;
+      // Surface the most actionable message we can. 401 means the
+      // token rotated out — the auth interceptor will eventually push
+      // /login, but in the meantime tell the vendor what's happening
+      // instead of hiding it behind "Could not load…".
+      if (code == 401) {
+        _lastDetailError = 'Session expired. Please log in again.';
+      } else if (code == 403) {
+        _lastDetailError = 'You don\'t have access to this order.';
+      } else if (code == 404) {
+        _lastDetailError = 'Order not found. It may have been removed.';
+      } else if (code != null && code >= 500) {
+        _lastDetailError =
+            'Server error ($code). Please try again in a moment.';
+      } else if (e.type == DioExceptionType.connectionError ||
+          e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        _lastDetailError = 'Network issue. Check your connection and retry.';
+      } else if (body is Map &&
+          (body['error'] is String || body['detail'] is String)) {
+        _lastDetailError = (body['error'] ?? body['detail']).toString();
+      } else {
+        _lastDetailError = 'Could not load order details.';
+      }
+      AppLogger.e(
+        'fetchOrderDetail($orderId) failed: '
+        'type=${e.type} status=$code body=$body',
+      );
       return null;
-    } catch (e) {
-      AppLogger.e('fetchOrderDetail($orderId): $e');
+    } catch (e, st) {
+      // Most often a JSON parsing problem — log the trace so we can
+      // pin down which field blew up. Don't swallow the type silently.
+      _lastDetailError = 'Failed to read order details (${e.runtimeType}).';
+      AppLogger.e('fetchOrderDetail($orderId) parse/unknown: $e\n$st');
       return null;
     }
   }
@@ -773,6 +840,20 @@ class OrdersViewModel extends ChangeNotifier {
     if (e.response == null) return 'Cannot reach server.';
     final data = e.response!.data;
     if (data is Map<String, dynamic>) {
+      // Subscription gates shipped with the 2026-04-20 backend update
+      // return a structured `{error, code}` body where `code` is one
+      // of SUBSCRIPTION_SUSPENDED / PLAN_LIMIT_EXCEEDED. We surface
+      // the human-readable `error` verbatim — it already says "Please
+      // renew your plan…" and the UI can deep-link to subscription
+      // later by inspecting _lastErrorCode.
+      final code = data['code'];
+      if (data['error'] is String) {
+        if (code == 'SUBSCRIPTION_SUSPENDED' ||
+            code == 'PLAN_LIMIT_EXCEEDED') {
+          _lastErrorCode = code as String;
+        }
+        return data['error'] as String;
+      }
       if (data['message'] is String) return data['message'] as String;
       if (data['detail'] is String) return data['detail'] as String;
       if (data['errors'] is Map) {
@@ -782,4 +863,12 @@ class OrdersViewModel extends ChangeNotifier {
     }
     return 'Error (HTTP ${e.response!.statusCode})';
   }
+
+  /// Last error's machine-readable `code` (e.g. 'SUBSCRIPTION_SUSPENDED'),
+  /// null for generic errors. Lets the UI branch on specific gate
+  /// failures to show a deep-link to subscription / upgrade screens
+  /// instead of just a toast.
+  String? _lastErrorCode;
+  String? get lastErrorCode => _lastErrorCode;
+  void clearLastErrorCode() => _lastErrorCode = null;
 }

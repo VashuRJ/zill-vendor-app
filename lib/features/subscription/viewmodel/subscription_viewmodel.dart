@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -16,9 +18,36 @@ enum SubscriptionStatus {
 
 class SubscriptionViewModel extends ChangeNotifier {
   final ApiService _apiService;
+  StreamSubscription<void>? _sessionClearedSub;
 
   SubscriptionViewModel({required ApiService apiService})
-      : _apiService = apiService;
+      : _apiService = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Flush the previous vendor's subscription + invoices so the next
+  /// vendor's plan screen doesn't briefly flash another restaurant's
+  /// "Current Plan" badge before the fresh /subscription/my/ fetch.
+  void clearSession() {
+    _status = SubscriptionStatus.initial;
+    _errorMessage = null;
+    _plans = [];
+    _mySubscription = null;
+    _invoices = [];
+    _showAnnual = false;
+    _subscribingPlanPk = null;
+    _pendingInvoiceId = null;
+    _pendingPaymentId = null;
+    _pendingSignature = null;
+    notifyListeners();
+  }
 
   // ── State ─────────────────────────────────────────────────────────────
   SubscriptionStatus _status = SubscriptionStatus.initial;
@@ -30,6 +59,12 @@ class SubscriptionViewModel extends ChangeNotifier {
 
   // Billing toggle state for UI
   bool _showAnnual = false;
+
+  // Which plan PK is currently subscribing. Only ONE plan can be in-flight
+  // at a time, but tracking the PK lets the UI spin ONLY the tapped card's
+  // button (previously `isSubscribing` was a single boolean, so all plan
+  // cards rendered a spinner when any one was submitted — confusing UX).
+  int? _subscribingPlanPk;
 
   // Pending verification data — survives network drops so user can retry
   String? _pendingInvoiceId;
@@ -50,9 +85,14 @@ class SubscriptionViewModel extends ChangeNotifier {
   bool get hasSubscription => _mySubscription != null;
   bool get hasPendingVerification => _pendingPaymentId != null;
 
+  /// True only for the specific plan the user tapped. Use this (not
+  /// [isSubscribing]) in plan-card buttons so only the tapped card spins.
+  bool isSubscribingPlan(int planPk) => _subscribingPlanPk == planPk;
+
   // ── Reset status (e.g. after Razorpay back-button / error) ───────────
   void resetStatus() {
     _status = SubscriptionStatus.loaded;
+    _subscribingPlanPk = null;
     notifyListeners();
   }
 
@@ -103,6 +143,16 @@ class SubscriptionViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// True when the backend reports at least one active subscription
+  /// plan. Drives the "paused" UI on My Subscription so vendors with
+  /// active subs aren't shown live pricing / billing dates while
+  /// admin has globally disabled plans (price reset, GST reconfig,
+  /// re-launch). Defaults to `true` so the UI stays normal until the
+  /// first fetch resolves; flips to `false` only when the backend
+  /// explicitly says so.
+  bool _subscriptionsEnabled = true;
+  bool get subscriptionsEnabled => _subscriptionsEnabled;
+
   // ── Fetch my current subscription + invoices ──────────────────────────
   Future<void> fetchMySubscription() async {
     _status = SubscriptionStatus.loading;
@@ -113,6 +163,12 @@ class SubscriptionViewModel extends ChangeNotifier {
       final response = await _apiService.get(ApiEndpoints.mySubscription);
       final body = response.data as Map<String, dynamic>;
       final data = body['data'] as Map<String, dynamic>? ?? body;
+
+      // Read the global pause flag. Backend computes this as
+      // `SubscriptionPlan.objects.filter(is_active=True).exists()`,
+      // and the renewal cron honours the same flag — so when it's
+      // false here we know no charge is going to fire either.
+      _subscriptionsEnabled = data['subscriptions_enabled'] as bool? ?? true;
 
       if (data['subscription'] is Map<String, dynamic>) {
         _mySubscription = VendorSubscription.fromJson(
@@ -150,6 +206,7 @@ class SubscriptionViewModel extends ChangeNotifier {
       return null;
     }
     _status = SubscriptionStatus.subscribing;
+    _subscribingPlanPk = planPk;
     _errorMessage = null;
     notifyListeners();
 
@@ -168,6 +225,7 @@ class SubscriptionViewModel extends ChangeNotifier {
       // Backend returns: {trial: true, subscription_id, status: "trial", ...}
       if (data['trial'] == true) {
         _status = SubscriptionStatus.loaded;
+        _subscribingPlanPk = null;
         notifyListeners();
         // Refresh subscription from /my/ to get full object
         fetchMySubscription();
@@ -177,17 +235,20 @@ class SubscriptionViewModel extends ChangeNotifier {
       // Payment required — backend returns flat Razorpay order fields
       final orderData = RazorpayOrderData.fromJson(data);
       _status = SubscriptionStatus.loaded;
+      _subscribingPlanPk = null;
       notifyListeners();
       return orderData;
     } on DioException catch (e) {
       _errorMessage = _parseDioError(e);
       _status = SubscriptionStatus.error;
+      _subscribingPlanPk = null;
       notifyListeners();
       AppLogger.e('initiateSubscribe failed', e);
       return null;
     } catch (e) {
       _errorMessage = 'Failed to start subscription';
       _status = SubscriptionStatus.error;
+      _subscribingPlanPk = null;
       notifyListeners();
       AppLogger.e('initiateSubscribe unexpected', e);
       return null;

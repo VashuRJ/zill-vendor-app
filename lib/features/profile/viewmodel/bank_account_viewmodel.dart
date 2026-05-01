@@ -16,8 +16,16 @@ import '../../earnings/viewmodel/earnings_viewmodel.dart'
 class BankAccountData {
   final String holderName;
 
-  /// Server already returns a masked string e.g. "XXXX1234"
+  /// Full account number (preferred). Backend now returns this as
+  /// `account_number` so vendors can see their own saved number on
+  /// their own dashboard without re-entering it just to verify.
+  /// Empty when the backend doesn't include it (older deployments).
+  final String accountNumber;
+
+  /// Masked variant e.g. "XXXX1234" — kept as a fallback for older
+  /// backends and as a privacy-friendly display option.
   final String maskedNumber;
+
   final String ifscCode;
   final String bankName;
   final String branchName;
@@ -33,6 +41,7 @@ class BankAccountData {
 
   const BankAccountData({
     required this.holderName,
+    required this.accountNumber,
     required this.maskedNumber,
     required this.ifscCode,
     required this.bankName,
@@ -44,8 +53,14 @@ class BankAccountData {
     required this.isActive,
   });
 
+  /// Display-friendly account number — full when the backend sent
+  /// it, falls back to the masked variant for older deployments.
+  String get displayNumber =>
+      accountNumber.isNotEmpty ? accountNumber : maskedNumber;
+
   factory BankAccountData.fromJson(Map<String, dynamic> j) => BankAccountData(
     holderName: _s(j['account_holder_name']),
+    accountNumber: _s(j['account_number']),
     maskedNumber: _s(j['account_number_masked']),
     ifscCode: _s(j['ifsc_code']),
     bankName: _s(j['bank_name']),

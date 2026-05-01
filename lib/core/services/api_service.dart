@@ -18,10 +18,24 @@ class ApiService {
   final StorageService _storageService;
   final GlobalKey<NavigatorState>? _navigatorKey;
 
-  /// Broadcast stream that fires when session is invalidated (401 logout).
-  /// ViewModels should listen to this and stop all polling/timers.
+  /// Broadcast stream that fires whenever the session ends — both on
+  /// 401-triggered logout AND on explicit logout via the Settings
+  /// screen. Every stateful feature ViewModel MUST subscribe to this
+  /// and clear its in-memory state, otherwise the next user to log in
+  /// on this device sees the previous vendor's data (verified as a
+  /// privacy incident: "Vasu confectioners" restaurant + prior order
+  /// history shown to User B on 2026-04-21).
   static final _sessionExpiredController = StreamController<void>.broadcast();
   static Stream<void> get onSessionExpired => _sessionExpiredController.stream;
+
+  /// Fire the session-cleared event. Called from both the 401 logout
+  /// path (`_clearAndLogout`) and `AuthViewModel.logout()` so every
+  /// subscribed ViewModel flushes its state on either route.
+  static void fireSessionCleared() {
+    if (!_sessionExpiredController.isClosed) {
+      _sessionExpiredController.add(null);
+    }
+  }
 
   ApiService({
     required StorageService storageService,

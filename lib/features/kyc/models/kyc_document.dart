@@ -27,6 +27,11 @@ enum KycDocumentType {
     }
   }
 
+  // Display strings mirror the web vendor portal's DOCUMENT_CONFIG
+  // exactly (frontend_pages/vendor/documents.html → lines 614-646).
+  // Keeping text identical across surfaces avoids vendor confusion
+  // when their support call references one phrasing on web and they
+  // see another on app.
   String get displayName {
     switch (this) {
       case KycDocumentType.fssai:
@@ -36,7 +41,7 @@ enum KycDocumentType {
       case KycDocumentType.pan:
         return 'PAN Card';
       case KycDocumentType.bank:
-        return 'Bank Cancelled Cheque';
+        return 'Bank Account Proof';
       case KycDocumentType.shopLicense:
         return 'Shop License';
       case KycDocumentType.ownerId:
@@ -49,13 +54,13 @@ enum KycDocumentType {
   String get description {
     switch (this) {
       case KycDocumentType.fssai:
-        return 'Food Safety and Standards Authority of India license';
+        return 'Food Safety and Standards Authority of India';
       case KycDocumentType.gst:
-        return 'Goods and Services Tax registration certificate';
+        return 'Goods and Services Tax Registration';
       case KycDocumentType.pan:
-        return 'Permanent Account Number card of business owner';
+        return 'Permanent Account Number';
       case KycDocumentType.bank:
-        return 'Cancelled cheque or bank statement for payouts';
+        return 'Cancelled cheque or passbook';
       case KycDocumentType.shopLicense:
         return 'Municipal / trade license for your establishment';
       case KycDocumentType.ownerId:
@@ -65,8 +70,56 @@ enum KycDocumentType {
     }
   }
 
-  bool get isRequired =>
-      this == fssai || this == pan || this == bank || this == gst;
+  bool get isRequired => this == fssai || this == pan || this == bank;
+
+  /// Whether this document type collects an expiry date during upload.
+  /// Mirrors the web vendor portal's `DOCUMENT_CONFIG[type].hasExpiry`
+  /// flag so app uploads carry the same payload as web uploads.
+  bool get hasExpiry => this == fssai;
+
+  /// Label for the "document number" input. Bank docs ask for the
+  /// account number, not a cheque number — matches the web portal's
+  /// per-type field labels.
+  String get numberFieldLabel {
+    switch (this) {
+      case KycDocumentType.bank:
+        return 'Account Number';
+      case KycDocumentType.fssai:
+        return 'FSSAI License Number';
+      case KycDocumentType.gst:
+        return 'GSTIN';
+      case KycDocumentType.pan:
+        return 'PAN Number';
+      case KycDocumentType.shopLicense:
+        return 'Shop License Number';
+      case KycDocumentType.ownerId:
+        return 'Aadhaar / ID Number';
+      case KycDocumentType.other:
+        return 'Document Number';
+    }
+  }
+
+  /// Placeholder text inside the number input. Mirrors the web
+  /// `DOCUMENT_CONFIG[type].numberPlaceholder` strings so a vendor sees
+  /// the same format hint on app and web.
+  String get numberFieldHint {
+    switch (this) {
+      case KycDocumentType.fssai:
+        return 'Enter 14-digit FSSAI number';
+      case KycDocumentType.gst:
+        return 'Enter 15-character GSTIN';
+      case KycDocumentType.pan:
+        return 'Enter 10-character PAN';
+      case KycDocumentType.bank:
+        return 'Enter account number';
+      case KycDocumentType.shopLicense:
+        return 'Enter shop license number';
+      case KycDocumentType.ownerId:
+        return 'Enter Aadhaar / ID number';
+      case KycDocumentType.other:
+        return 'Enter document number';
+    }
+  }
 
   static KycDocumentType fromApi(String value) {
     switch (value) {

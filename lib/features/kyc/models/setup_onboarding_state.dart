@@ -19,7 +19,14 @@ class SetupOnboardingState {
   final String? profileVerificationStatus;
   final bool? isProfileVerified;
 
-  bool get isSetupComplete => documentsComplete && subscriptionComplete;
+  /// Setup is "complete enough" to enter the dashboard once required
+  /// KYC documents are uploaded. Subscription used to be part of this
+  /// gate, but admin occasionally pulls all plans offline (price /
+  /// GST changes, cleanup) — when that happened the vendor was
+  /// dead-stuck on the subscription screen with no plans to pick.
+  /// Subscription is now treated as a soft prompt the vendor can act
+  /// on later from Profile, never a hard gate.
+  bool get isSetupComplete => documentsComplete;
 
   bool get isSubscriptionLocked => !documentsComplete;
 

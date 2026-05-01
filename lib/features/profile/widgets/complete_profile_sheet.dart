@@ -35,6 +35,14 @@ import '../viewmodel/profile_viewmodel.dart';
 /// Public entry point — call from anywhere with a [BuildContext] that
 /// has [ProfileViewModel] in its provider tree.
 void showCompleteProfileSheet(BuildContext context) {
+  // Bind a tab-switch closure to the *calling* context so the sheet
+  // can route to the Menu tab. Bottom sheets render in a separate
+  // Overlay route; their builder context is a sibling of AppShell,
+  // not a descendant, so `AppShell.switchTab(sheetCtx, ...)` from
+  // inside the sheet silently no-ops. This was why "Add menu items"
+  // looked dead on tap — the sheet popped, but the tab never moved.
+  void switchTab(int index) => AppShell.switchTab(context, index);
+
   showModalBottomSheet<void>(
     context: context,
     backgroundColor: AppColors.surface,
@@ -42,7 +50,7 @@ void showCompleteProfileSheet(BuildContext context) {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) => const _CompleteProfileSheet(),
+    builder: (_) => _CompleteProfileSheet(onSwitchTab: switchTab),
   );
 }
 
@@ -75,7 +83,13 @@ class _ProfileTask {
 // ────────────────────────────────────────────────────────────────────
 
 class _CompleteProfileSheet extends StatelessWidget {
-  const _CompleteProfileSheet();
+  /// Closure bound to the parent (AppShell-descendant) context.
+  /// Required for the "Add menu items" tile — see the comment at
+  /// [showCompleteProfileSheet] for why we can't call
+  /// `AppShell.switchTab` with the sheet's own builder context.
+  final void Function(int index) onSwitchTab;
+
+  const _CompleteProfileSheet({required this.onSwitchTab});
 
   // ── Helpers to push specific screens, then refresh the profile ──
   void _go(BuildContext context, Widget page) {
@@ -231,12 +245,13 @@ class _CompleteProfileSheet extends StatelessWidget {
           // Switch to the Menu tab inside AppShell — pushing
           // MenuScreen() as a new MaterialPageRoute would create
           // a duplicate scaffold without the bottom nav bar.
-          // Order matters: switch first while `ctx` is still alive
-          // so findAncestorStateOfType can walk up to AppShell, then
-          // pop the sheet.
+          // `onSwitchTab` is bound to the parent context (where
+          // AppShell IS reachable). Calling switchTab with the
+          // sheet's builder context would silently no-op because
+          // the modal route is a sibling of AppShell, not a child.
           onTap: (ctx) {
-            AppShell.switchTab(ctx, 2);
             Navigator.of(ctx).pop();
+            onSwitchTab(2);
           },
         ),
       );

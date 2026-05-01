@@ -135,16 +135,21 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
           _loadingDetail = false;
         });
       } else {
+        // Pull the specific reason from the VM so the vendor (and
+        // support / web team triaging this) sees what actually went
+        // wrong — 401, 404, 5xx, network drop, parse — instead of the
+        // older generic "Could not load…" wall.
         setState(() {
           _loadingDetail = false;
-          _detailError = 'Could not load order details.';
+          _detailError =
+              widget.vm.lastDetailError ?? 'Could not load order details.';
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loadingDetail = false;
-        _detailError = 'Failed to load details. Tap to retry.';
+        _detailError = 'Failed to load details: ${e.runtimeType}. Tap to retry.';
       });
     }
   }

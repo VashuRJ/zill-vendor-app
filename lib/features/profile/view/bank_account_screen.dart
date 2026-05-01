@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -384,7 +387,8 @@ class _DetailsView extends StatelessWidget {
                 icon: Icons.credit_card_rounded,
                 iconColor: AppColors.primary,
                 label: 'Account Number',
-                value: _formatMasked(data.maskedNumber),
+                value: _formatAccountNumber(data.displayNumber),
+                copyable: data.accountNumber.isNotEmpty,
               ),
               _DetailRow(
                 icon: Icons.pin_rounded,
@@ -503,14 +507,18 @@ class _DetailsView extends StatelessWidget {
 
 }
 
-/// Formats a masked account number like "XXXX1234" → "XXXX 1234" for
-/// readability. Falls back to the em-dash if the value is empty.
-String _formatMasked(String masked) {
-  if (masked.isEmpty) return '\u2014';
-  if (masked.length <= 4) return masked;
-  final tail = masked.substring(masked.length - 4);
-  final head = masked.substring(0, masked.length - 4);
-  return '$head $tail';
+/// Formats an account number with a space every 4 chars for
+/// readability \u2014 e.g. "1234567890123456" \u2192 "1234 5678 9012 3456".
+/// Works for both full and masked variants. Falls back to em-dash
+/// if the value is empty.
+String _formatAccountNumber(String number) {
+  if (number.isEmpty) return '\u2014';
+  final buf = StringBuffer();
+  for (var i = 0; i < number.length; i++) {
+    if (i > 0 && i % 4 == 0) buf.write(' ');
+    buf.write(number[i]);
+  }
+  return buf.toString();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -589,7 +597,7 @@ class _BankCard extends StatelessWidget {
               ),
               const Spacer(),
               Text(
-                _formatMasked(data.maskedNumber),
+                _formatAccountNumber(data.displayNumber),
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 20,
@@ -1501,8 +1509,39 @@ class _FormViewState extends State<_FormView> {
   final _ifscFocus = FocusNode();
   final _upiFocus = FocusNode();
 
+  // ── IFSC → Bank lookup state ───────────────────────────────────────
+  // The form previously had no Bank Name field at all, so vendors saw
+  // their IFSC saved but never confirmed which bank it resolved to.
+  // We now hit Razorpay's free public IFSC API on the fly so the
+  // resolved bank + branch shows under the IFSC input as the user
+  // types. Backend does the same lookup server-side; this is purely
+  // a UX confirmation so a typo doesn't get past the form.
+  Timer? _ifscDebounce;
+  String? _resolvedBank;
+  String? _resolvedBranch;
+  bool _isResolvingIfsc = false;
+  String? _ifscLookupError;
+
+  // Fresh Dio (no JWT interceptors). The IFSC API is public and our
+  // ApiService base URL points at the Zill backend, not ifsc.razorpay.
+  final Dio _ifscDio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 4),
+      receiveTimeout: const Duration(seconds: 4),
+    ),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _ifscCtrl.addListener(_onIfscChanged);
+  }
+
   @override
   void dispose() {
+    _ifscCtrl.removeListener(_onIfscChanged);
+    _ifscDebounce?.cancel();
+    _ifscDio.close(force: true);
     _holderCtrl.dispose();
     _acctCtrl.dispose();
     _confirmCtrl.dispose();
@@ -1514,6 +1553,74 @@ class _FormViewState extends State<_FormView> {
     _ifscFocus.dispose();
     _upiFocus.dispose();
     super.dispose();
+  }
+
+  void _onIfscChanged() {
+    final code = _ifscCtrl.text.trim().toUpperCase();
+    _ifscDebounce?.cancel();
+
+    // Reset stale resolution as soon as the input changes — a stale
+    // "Bank: HDFC" line under a half-typed IFSC would mislead.
+    if (_resolvedBank != null ||
+        _resolvedBranch != null ||
+        _ifscLookupError != null) {
+      setState(() {
+        _resolvedBank = null;
+        _resolvedBranch = null;
+        _ifscLookupError = null;
+      });
+    }
+
+    if (code.length != 11) return;
+
+    // Debounce so paste/typing doesn't fire a request per keystroke.
+    _ifscDebounce = Timer(const Duration(milliseconds: 350), () {
+      _lookupIfsc(code);
+    });
+  }
+
+  Future<void> _lookupIfsc(String code) async {
+    if (!mounted) return;
+    setState(() {
+      _isResolvingIfsc = true;
+      _ifscLookupError = null;
+    });
+
+    try {
+      final res = await _ifscDio.get<Map<String, dynamic>>(
+        'https://ifsc.razorpay.com/$code',
+      );
+      if (!mounted) return;
+      // The user kept typing while the request was in flight — drop
+      // the stale response.
+      if (_ifscCtrl.text.trim().toUpperCase() != code) return;
+
+      final data = res.data ?? const <String, dynamic>{};
+      setState(() {
+        _resolvedBank = (data['BANK'] as String?)?.trim();
+        _resolvedBranch = (data['BRANCH'] as String?)?.trim();
+        _isResolvingIfsc = false;
+      });
+    } on DioException catch (e) {
+      if (!mounted) return;
+      if (_ifscCtrl.text.trim().toUpperCase() != code) return;
+      setState(() {
+        _isResolvingIfsc = false;
+        _resolvedBank = null;
+        _resolvedBranch = null;
+        // 404 = unknown IFSC; anything else = network/timeout.
+        _ifscLookupError = e.response?.statusCode == 404
+            ? 'IFSC code not recognised. Double-check with your passbook.'
+            : null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isResolvingIfsc = false;
+        _resolvedBank = null;
+        _resolvedBranch = null;
+      });
+    }
   }
 
   Future<void> _submit() async {
@@ -1648,6 +1755,17 @@ class _FormViewState extends State<_FormView> {
                 }
                 return null;
               },
+            ),
+
+            // Live resolved bank + branch from Razorpay's public IFSC
+            // lookup — shown only when there's something to show
+            // (loading, success, or recognised-as-invalid). Replaces
+            // the missing "Bank Name" input field.
+            _IfscResolutionPanel(
+              isResolving: _isResolvingIfsc,
+              bank: _resolvedBank,
+              branch: _resolvedBranch,
+              error: _ifscLookupError,
             ),
 
             const SizedBox(height: AppSizes.lg),
@@ -2059,4 +2177,111 @@ class UpperCaseTextFormatter extends TextInputFormatter {
     TextEditingValue newValue,
   ) =>
       newValue.copyWith(text: newValue.text.toUpperCase());
+}
+
+/// Inline panel below the IFSC field showing the resolved bank
+/// + branch (or a loading spinner / "not recognised" hint).
+/// Replaces the dedicated "Bank Name" input — vendors can no
+/// longer mistype the bank name because the IFSC dictates it.
+class _IfscResolutionPanel extends StatelessWidget {
+  const _IfscResolutionPanel({
+    required this.isResolving,
+    required this.bank,
+    required this.branch,
+    required this.error,
+  });
+
+  final bool isResolving;
+  final String? bank;
+  final String? branch;
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    // Nothing to render — keep the IFSC field flush against the
+    // account-type toggle so the form doesn't grow extra empty space
+    // before the user has typed an 11-char IFSC. We collapse on
+    // both null *and* empty bank because a corrupt API response
+    // (rare, but observed for some legacy IFSC codes) would
+    // otherwise render a blank success panel.
+    final hasBank = (bank ?? '').isNotEmpty;
+    if (!isResolving && !hasBank && error == null) {
+      return const SizedBox.shrink();
+    }
+
+    final Color bg;
+    final Color fg;
+    final IconData icon;
+    final Widget content;
+
+    if (isResolving) {
+      bg = AppColors.background;
+      fg = AppColors.textSecondary;
+      icon = Icons.search_rounded;
+      content = const Text('Looking up bank…');
+    } else if (error != null) {
+      bg = AppColors.errorLight;
+      fg = AppColors.error;
+      icon = Icons.error_outline_rounded;
+      content = Text(error!);
+    } else {
+      bg = AppColors.successLight;
+      fg = AppColors.success;
+      icon = Icons.check_circle_rounded;
+      final lines = <String>[
+        if ((bank ?? '').isNotEmpty) bank!,
+        if ((branch ?? '').isNotEmpty) branch!,
+      ];
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < lines.length; i++)
+            Text(
+              lines[i],
+              style: TextStyle(
+                fontSize: AppSizes.fontSm,
+                color: fg,
+                fontWeight: i == 0 ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+        ],
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSizes.xs + 2),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(AppSizes.sm + 2),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(AppSizes.radiusSm),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isResolving)
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(icon, size: 18, color: fg),
+            const SizedBox(width: AppSizes.sm),
+            Expanded(
+              child: DefaultTextStyle(
+                style: TextStyle(
+                  fontSize: AppSizes.fontSm,
+                  color: fg,
+                  fontWeight: FontWeight.w500,
+                ),
+                child: content,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/constants/api_endpoints.dart';
@@ -54,6 +56,47 @@ class DeliveryZone {
   };
 }
 
+// ── Fee guardrail (matches backend DeliveryFeeConfig + web's
+//    PageState.feeGuardrail) ────────────────────────────────────────
+//
+// The backend rejects any zone whose `delivery_fee` falls below
+// `base_pay + max(per_km_pay × max_distance, min_distance_pay)`.
+// Reason: customer's delivery_fee is what platform receives, and
+// platform pays the DP based on actual distance. Fee below DP cost
+// means the platform absorbs the loss every order.
+//
+// Web frontend (frontend_pages/vendor/delivery-zones.html ~line 1665)
+// renders a live "Minimum allowed: Rs.X" hint below the fee input
+// using the same formula. The app mirrors that here so vendors see
+// the constraint while typing instead of being rejected on submit.
+class FeeGuardrail {
+  final double basePay;
+  final double perKmPay;
+  final double minDistancePay;
+
+  const FeeGuardrail({
+    this.basePay = 30,
+    this.perKmPay = 5,
+    this.minDistancePay = 10,
+  });
+
+  factory FeeGuardrail.fromJson(Map<String, dynamic> j) => FeeGuardrail(
+        basePay: double.tryParse((j['base_pay'] ?? '30').toString()) ?? 30,
+        perKmPay: double.tryParse((j['per_km_pay'] ?? '5').toString()) ?? 5,
+        minDistancePay:
+            double.tryParse((j['min_distance_pay'] ?? '10').toString()) ?? 10,
+      );
+
+  /// Minimum delivery fee a vendor can set for a zone with this max
+  /// distance. Mirrors backend `DeliveryZoneView._min_required_fee()`.
+  double minRequiredFee(double maxDistanceKm) {
+    final distancePay = (perKmPay * maxDistanceKm) > minDistancePay
+        ? (perKmPay * maxDistanceKm)
+        : minDistancePay;
+    return basePay + distancePay;
+  }
+}
+
 // ── Restaurant-level delivery config ────────────────────────────────
 class RestaurantDeliveryConfig {
   final double deliveryRadiusKm;
@@ -89,13 +132,38 @@ enum DeliveryZoneStatus { initial, loading, loaded, error }
 
 class DeliveryZoneViewModel extends ChangeNotifier {
   final ApiService _api;
+  StreamSubscription<void>? _sessionClearedSub;
 
-  DeliveryZoneViewModel({required ApiService apiService}) : _api = apiService;
+  DeliveryZoneViewModel({required ApiService apiService})
+      : _api = apiService {
+    _sessionClearedSub =
+        ApiService.onSessionExpired.listen((_) => clearSession());
+  }
+
+  @override
+  void dispose() {
+    _sessionClearedSub?.cancel();
+    super.dispose();
+  }
+
+  /// Flush zones + restaurant delivery config so the next vendor's
+  /// settings screen doesn't render stale per-restaurant data.
+  void clearSession() {
+    _status = DeliveryZoneStatus.initial;
+    _error = null;
+    _zones = [];
+    _config = const RestaurantDeliveryConfig();
+    _feeGuardrail = const FeeGuardrail();
+    _saving = false;
+    _deleting.clear();
+    notifyListeners();
+  }
 
   DeliveryZoneStatus _status = DeliveryZoneStatus.initial;
   String? _error;
   List<DeliveryZone> _zones = [];
   RestaurantDeliveryConfig _config = const RestaurantDeliveryConfig();
+  FeeGuardrail _feeGuardrail = const FeeGuardrail();
   bool _saving = false;
   final Set<int> _deleting = {};
 
@@ -104,6 +172,7 @@ class DeliveryZoneViewModel extends ChangeNotifier {
   String? get error => _error;
   List<DeliveryZone> get zones => _zones;
   RestaurantDeliveryConfig get config => _config;
+  FeeGuardrail get feeGuardrail => _feeGuardrail;
   bool get isSaving => _saving;
   bool isDeleting(int id) => _deleting.contains(id);
   int get activeCount => _zones.where((z) => z.isActive).length;
@@ -131,6 +200,15 @@ class DeliveryZoneViewModel extends ChangeNotifier {
 
         // Parse restaurant-level config if present
         _config = RestaurantDeliveryConfig.fromJson(data);
+
+        // Parse fee guardrail (added in upstream backend update —
+        // tells the editor what minimum fee to enforce per zone).
+        // Older backends won't include this; the default constants
+        // (30 base, 5 per_km, 10 min_distance_pay) match production.
+        final rawGuardrail = data['fee_guardrail'];
+        if (rawGuardrail is Map<String, dynamic>) {
+          _feeGuardrail = FeeGuardrail.fromJson(rawGuardrail);
+        }
       } else if (data is List) {
         _zones = data
             .whereType<Map<String, dynamic>>()

@@ -6,6 +6,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
+import '../../../core/routing/app_router.dart';
+import '../../subscription/viewmodel/subscription_viewmodel.dart';
 import '../models/kyc_document.dart';
 import '../viewmodel/kyc_viewmodel.dart';
 
@@ -17,17 +19,20 @@ class KycDocumentsScreen extends StatefulWidget {
 }
 
 class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
+  // Required vs optional split mirrors the web vendor portal
+  // (frontend_pages/vendor/documents.html → DOCUMENT_CONFIG). Only
+  // four document types are exposed on web: fssai, gst, pan, bank.
+  // Shop License / Aadhaar / Other have no upload path on web and
+  // would write rows the verification flow can't process — so the
+  // app must not surface them either.
   static const _requiredTypes = [
     KycDocumentType.fssai,
     KycDocumentType.pan,
-    KycDocumentType.gst,
     KycDocumentType.bank,
   ];
 
   static const _optionalTypes = [
-    KycDocumentType.shopLicense,
-    KycDocumentType.ownerId,
-    KycDocumentType.other,
+    KycDocumentType.gst,
   ];
 
   @override
@@ -67,6 +72,13 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
             backgroundColor: AppColors.surface,
             foregroundColor: AppColors.textPrimary,
             elevation: 0.5,
+          ),
+          // Persistent bottom CTA — gives vendors a clear "I'm done,
+          // what's next?" signal after uploading required docs. Before
+          // this, users hit Back and hoped the setup screen would know
+          // they're done (Bug C from the in-the-wild feedback).
+          bottomNavigationBar: Consumer<KycViewModel>(
+            builder: (context, vm, _) => _ContinueToSubscriptionBar(vm: vm),
           ),
           body: Consumer<KycViewModel>(
             builder: (context, vm, _) {
@@ -171,15 +183,19 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
   }
 
   void _confirmDelete(BuildContext context, KycViewModel vm, KycDocument doc) {
+    final docName = doc.documentTypeDisplay.isNotEmpty
+        ? doc.documentTypeDisplay
+        : doc.documentType.displayName;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSizes.radiusMd),
         ),
-        title: const Text('Delete Document'),
+        title: const Text('Delete document?'),
         content: Text(
-          'Are you sure you want to delete ${doc.documentTypeDisplay.isNotEmpty ? doc.documentTypeDisplay : doc.documentType.displayName}?',
+          'Delete the uploaded $docName file? You can upload a new one '
+          'right after.',
         ),
         actions: [
           TextButton(
@@ -195,7 +211,7 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
                   SnackBar(
                     content: Text(
                       success
-                          ? 'Document deleted'
+                          ? 'Deleted. Tap Upload to add a new file.'
                           : vm.error ?? 'Delete failed',
                     ),
                     backgroundColor: success
@@ -207,6 +223,12 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
                     ),
                   ),
                 );
+                // Nudge the user straight into the upload sheet so the
+                // next file is one tap away — they almost always want
+                // to re-upload, so don't make them hunt for the button.
+                if (success) {
+                  _showUploadSheet(context, doc.documentType, null);
+                }
               }
             },
             child: const Text(
@@ -231,6 +253,9 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
       text: existing?.documentNumber ?? '',
     );
     final formKey = GlobalKey<FormState>();
+    // Holder for the selected expiry date so it survives StatefulBuilder
+    // rebuilds. Prefilled from the existing doc when re-uploading.
+    DateTime? expiryDate = existing?.expiryDate;
 
     showModalBottomSheet(
       context: context,
@@ -242,132 +267,168 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
         ),
       ),
       builder: (sheetContext) {
-        return Padding(
-          padding: EdgeInsets.only(
-            left: AppSizes.lg,
-            right: AppSizes.lg,
-            top: AppSizes.lg,
-            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + AppSizes.lg,
-          ),
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Handle bar
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: AppColors.divider,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: AppSizes.md),
-                Text(
-                  existing != null
-                      ? 'Re-upload ${type.displayName}'
-                      : 'Upload ${type.displayName}',
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontXl,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: AppSizes.xs),
-                Text(
-                  type.description,
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontSm,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: AppSizes.md),
-                // Document number field
-                TextFormField(
-                  controller: numberController,
-                  decoration: InputDecoration(
-                    labelText: '${type.displayName} Number',
-                    hintText: 'Enter document number',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppSizes.radiusMd),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppSizes.radiusMd),
-                      borderSide: const BorderSide(
-                        color: AppColors.primary,
-                        width: 2,
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) => Padding(
+            padding: EdgeInsets.only(
+              left: AppSizes.lg,
+              right: AppSizes.lg,
+              top: AppSizes.lg,
+              bottom:
+                  MediaQuery.of(sheetContext).viewInsets.bottom + AppSizes.lg,
+            ),
+            child: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Handle bar
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColors.divider,
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                   ),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Required' : null,
-                ),
-                const SizedBox(height: AppSizes.lg),
-                // Source buttons
-                Row(
-                  children: [
-                    Expanded(
-                      child: _SourceButton(
-                        icon: Icons.camera_alt_rounded,
-                        label: 'Camera',
-                        onTap: () => _handleFilePick(
-                          context,
-                          sheetContext,
-                          type,
-                          numberController,
-                          formKey,
-                          'camera',
+                  const SizedBox(height: AppSizes.md),
+                  Text(
+                    existing != null
+                        ? 'Re-upload ${type.displayName}'
+                        : 'Upload ${type.displayName}',
+                    style: const TextStyle(
+                      fontSize: AppSizes.fontXl,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: AppSizes.xs),
+                  Text(
+                    type.description,
+                    style: const TextStyle(
+                      fontSize: AppSizes.fontSm,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: AppSizes.md),
+                  // Document number field — label & hint come from the
+                  // type so each document asks for the right thing
+                  // (e.g. "Account Number" for bank, not "Bank
+                  // Cancelled Cheque Number"). Mirrors the web
+                  // vendor portal's per-type config.
+                  TextFormField(
+                    controller: numberController,
+                    decoration: InputDecoration(
+                      labelText: type.numberFieldLabel,
+                      hintText: type.numberFieldHint,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 2,
                         ),
                       ),
                     ),
-                    const SizedBox(width: AppSizes.sm),
-                    Expanded(
-                      child: _SourceButton(
-                        icon: Icons.photo_library_rounded,
-                        label: 'Gallery',
-                        onTap: () => _handleFilePick(
-                          context,
-                          sheetContext,
-                          type,
-                          numberController,
-                          formKey,
-                          'gallery',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppSizes.sm),
-                    Expanded(
-                      child: _SourceButton(
-                        icon: Icons.picture_as_pdf_rounded,
-                        label: 'PDF',
-                        onTap: () => _handleFilePick(
-                          context,
-                          sheetContext,
-                          type,
-                          numberController,
-                          formKey,
-                          'pdf',
-                        ),
-                      ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                  ),
+                  // Expiry date — only for document types that carry one
+                  // (FSSAI today). Mirrors the web vendor portal's
+                  // `DOCUMENT_CONFIG[type].hasExpiry` field so uploads
+                  // from app and web produce identical records.
+                  if (type.hasExpiry) ...[
+                    const SizedBox(height: AppSizes.md),
+                    _ExpiryDateField(
+                      value: expiryDate,
+                      onPick: () async {
+                        final now = DateTime.now();
+                        final picked = await showDatePicker(
+                          context: sheetContext,
+                          initialDate: expiryDate ?? now,
+                          firstDate: now.subtract(const Duration(days: 365)),
+                          lastDate: DateTime(now.year + 20),
+                          helpText: 'Select expiry date',
+                        );
+                        if (picked != null) {
+                          setSheetState(() => expiryDate = picked);
+                        }
+                      },
+                      onClear: expiryDate == null
+                          ? null
+                          : () => setSheetState(() => expiryDate = null),
                     ),
                   ],
-                ),
-                const SizedBox(height: AppSizes.sm),
-                Center(
-                  child: Text(
-                    'Max file size: 5 MB',
-                    style: TextStyle(
-                      fontSize: AppSizes.fontXs,
-                      color: AppColors.textHint,
+                  const SizedBox(height: AppSizes.lg),
+                  // Source buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _SourceButton(
+                          icon: Icons.camera_alt_rounded,
+                          label: 'Camera',
+                          onTap: () => _handleFilePick(
+                            context,
+                            sheetContext,
+                            type,
+                            numberController,
+                            formKey,
+                            'camera',
+                            expiryDate,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppSizes.sm),
+                      Expanded(
+                        child: _SourceButton(
+                          icon: Icons.photo_library_rounded,
+                          label: 'Gallery',
+                          onTap: () => _handleFilePick(
+                            context,
+                            sheetContext,
+                            type,
+                            numberController,
+                            formKey,
+                            'gallery',
+                            expiryDate,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppSizes.sm),
+                      Expanded(
+                        child: _SourceButton(
+                          icon: Icons.picture_as_pdf_rounded,
+                          label: 'PDF',
+                          onTap: () => _handleFilePick(
+                            context,
+                            sheetContext,
+                            type,
+                            numberController,
+                            formKey,
+                            'pdf',
+                            expiryDate,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSizes.sm),
+                  Center(
+                    child: Text(
+                      'Max file size: 5 MB',
+                      style: TextStyle(
+                        fontSize: AppSizes.fontXs,
+                        color: AppColors.textHint,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: AppSizes.sm),
-              ],
+                  const SizedBox(height: AppSizes.sm),
+                ],
+              ),
             ),
           ),
         );
@@ -382,6 +443,7 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
     TextEditingController numberController,
     GlobalKey<FormState> formKey,
     String source,
+    DateTime? expiryDate,
   ) async {
     if (!formKey.currentState!.validate()) return;
 
@@ -418,6 +480,7 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
       type: type,
       documentNumber: numberController.text.trim(),
       filePath: filePath,
+      expiryDate: expiryDate != null ? _isoDate(expiryDate) : null,
     );
 
     if (parentContext.mounted) {
@@ -472,11 +535,85 @@ class _KycDocumentsScreenState extends State<KycDocumentsScreen> {
       ),
     );
   }
+
+  /// Backend `expiry_date` is a Django DateField — needs YYYY-MM-DD.
+  static String _isoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WIDGETS
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Tap-to-pick expiry date row used in the upload bottom sheet. Looks
+/// like a TextField but opens [showDatePicker] on tap. Optional Clear
+/// button appears once a date is selected.
+class _ExpiryDateField extends StatelessWidget {
+  final DateTime? value;
+  final VoidCallback onPick;
+  final VoidCallback? onClear;
+
+  const _ExpiryDateField({
+    required this.value,
+    required this.onPick,
+    required this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasValue = value != null;
+    final label = hasValue
+        ? '${value!.day.toString().padLeft(2, '0')}/'
+              '${value!.month.toString().padLeft(2, '0')}/'
+              '${value!.year}'
+        : 'Select expiry date';
+
+    return InkWell(
+      onTap: onPick,
+      borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'Expiry Date',
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppSizes.radiusMd),
+            borderSide: const BorderSide(
+              color: AppColors.primary,
+              width: 2,
+            ),
+          ),
+          prefixIcon: const Icon(
+            Icons.event_rounded,
+            color: AppColors.textSecondary,
+          ),
+          suffixIcon: onClear != null
+              ? IconButton(
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    color: AppColors.textSecondary,
+                    size: 18,
+                  ),
+                  tooltip: 'Clear date',
+                  onPressed: onClear,
+                )
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: AppSizes.fontMd,
+            color: hasValue ? AppColors.textPrimary : AppColors.textHint,
+            fontWeight: hasValue ? FontWeight.w500 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// White verification status card mirroring the web KYC page header.
 /// Title on the left, status pill on the right, gradient progress bar
@@ -847,24 +984,38 @@ class _DocumentCard extends StatelessWidget {
                         ],
                       ),
                     ),
-                    // View button
+                    // View / Delete — plain Material icon buttons.
+                    // Vendors found the earlier styled chips confusing;
+                    // a clean eye + trash pair is universally
+                    // understood and keeps the row uncluttered.
                     if (onView != null)
-                      _IconActionButton(
-                        icon: Icons.visibility_rounded,
-                        color: AppColors.primary,
+                      IconButton(
+                        onPressed: onView,
+                        icon: const Icon(Icons.visibility_outlined),
+                        color: AppColors.textSecondary,
+                        iconSize: 20,
                         tooltip: 'View',
-                        onTap: onView!,
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 36,
+                          height: 36,
+                        ),
                       ),
-                    // Delete button
-                    if (onDelete != null) ...[
-                      const SizedBox(width: 4),
-                      _IconActionButton(
-                        icon: Icons.delete_outline_rounded,
+                    if (onDelete != null)
+                      IconButton(
+                        onPressed: onDelete,
+                        icon: const Icon(Icons.delete_outline_rounded),
                         color: AppColors.error,
+                        iconSize: 20,
                         tooltip: 'Delete',
-                        onTap: onDelete!,
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 36,
+                          height: 36,
+                        ),
                       ),
-                    ],
                   ],
                 ),
               ),
@@ -1151,36 +1302,195 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _IconActionButton extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String tooltip;
-  final VoidCallback onTap;
 
-  const _IconActionButton({
-    required this.icon,
-    required this.color,
-    required this.tooltip,
-    required this.onTap,
-  });
+/// Persistent bottom bar that makes the "next step" obvious after
+/// uploading required KYC documents. Three states:
+///  • No required doc uploaded yet → hide entirely (no nagging).
+///  • Some required uploaded → show progress ("2 of 4 uploaded").
+///  • All required uploaded → enable primary CTA "Continue to
+///    Subscription" that navigates directly to the subscription plans
+///    screen (no back-and-forth through the Setup Onboarding screen).
+/// Smart "Continue" bar at the bottom of the KYC docs screen.
+///
+/// Why stateful: the destination of the Continue button is decided at
+/// tap-time by asking the backend whether any active subscription
+/// plans exist. When admin temporarily disables every plan (price /
+/// GST resets, cleanup), we don't want the vendor to end up on a
+/// blank Subscription Plans screen — and we don't want to ship an
+/// app update every time the plan list is toggled. So:
+///   • Plans available → push /subscription-plans (normal flow)
+///   • No plans       → push /home (skip the dead gate)
+/// The check uses the existing SubscriptionViewModel.fetchPlans() so
+/// no extra wiring; we just key off the resulting `vm.plans` length.
+class _ContinueToSubscriptionBar extends StatefulWidget {
+  final KycViewModel vm;
+  const _ContinueToSubscriptionBar({required this.vm});
+
+  @override
+  State<_ContinueToSubscriptionBar> createState() =>
+      _ContinueToSubscriptionBarState();
+}
+
+class _ContinueToSubscriptionBarState
+    extends State<_ContinueToSubscriptionBar> {
+  bool _checking = false;
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppSizes.radiusSm),
-        child: Container(
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: color.withAlpha(20),
-            borderRadius: BorderRadius.circular(AppSizes.radiusSm),
+    final vm = widget.vm;
+    final uploaded = vm.uploadedRequiredDocumentCount;
+    final total = vm.totalRequiredDocumentCount;
+
+    // Don't crowd a fresh screen — hide until at least one upload.
+    if (uploaded == 0) return const SizedBox.shrink();
+
+    // Already-approved vendors who reopen this screen from Profile
+    // aren't in the onboarding flow — nudging them to Subscription
+    // would be nonsense (they already have one). Let them browse docs
+    // in peace.
+    if (vm.verificationStatus?.isFullyVerified == true) {
+      return const SizedBox.shrink();
+    }
+
+    final allUploaded = total > 0 && uploaded >= total;
+    final canTap = allUploaded && !_checking;
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(
+          AppSizes.md,
+          AppSizes.sm,
+          AppSizes.md,
+          AppSizes.sm,
+        ),
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          border: Border(
+            top: BorderSide(color: AppColors.borderLight, width: 1),
           ),
-          child: Icon(icon, size: 18, color: color),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 12,
+              offset: Offset(0, -4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!allUploaded) ...[
+              Row(
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    size: 16,
+                    color: AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '$uploaded of $total required documents uploaded — '
+                      'upload the rest to continue.',
+                      style: const TextStyle(
+                        fontSize: AppSizes.fontSm,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: canTap ? _continue : null,
+                icon: _checking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    : Icon(
+                        allUploaded
+                            ? Icons.arrow_forward_rounded
+                            : Icons.lock_outline_rounded,
+                        size: 18,
+                      ),
+                label: Text(
+                  _checking
+                      ? 'Please wait…'
+                      : allUploaded
+                      ? 'Continue'
+                      : 'Upload all required documents',
+                ),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(50),
+                  backgroundColor: allUploaded
+                      ? AppColors.primary
+                      : const Color(0xFFE2E5E8),
+                  foregroundColor: allUploaded
+                      ? Colors.white
+                      : AppColors.textSecondary,
+                  textStyle: const TextStyle(
+                    fontSize: AppSizes.fontLg,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _continue() async {
+    setState(() => _checking = true);
+
+    // Ask the backend whether any plan rows are active right now. We
+    // route the vendor based on the answer instead of hardcoding a
+    // destination — that way admin can disable / re-enable plans
+    // without an app release. If the call itself fails (offline,
+    // 5xx), we fall through to the subscription screen, which has
+    // its own empty-state escape hatch (and a Retry button).
+    final subVm = context.read<SubscriptionViewModel>();
+    bool plansAvailable = true;
+    try {
+      await subVm.fetchPlans();
+      plansAvailable = subVm.plans.isNotEmpty;
+    } catch (_) {
+      plansAvailable = true; // be conservative — let the next screen handle it
+    }
+
+    if (!mounted) return;
+    setState(() => _checking = false);
+
+    if (plansAvailable) {
+      // Replace KYC with subscription so swipe-back doesn't loop the
+      // vendor backward through onboarding.
+      await Navigator.of(
+        context,
+      ).pushReplacementNamed(AppRouter.subscriptionPlans);
+    } else {
+      // No plans → skip the gate and drop the vendor straight on the
+      // dashboard, clearing the back stack so they can't swipe-back
+      // into a half-finished onboarding flow.
+      await Navigator.of(
+        context,
+      ).pushNamedAndRemoveUntil('/home', (route) => false);
+    }
   }
 }
 

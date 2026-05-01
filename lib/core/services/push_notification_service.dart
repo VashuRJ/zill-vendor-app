@@ -238,7 +238,13 @@ class PushNotificationService {
   }
 
   /// POST /api/notifications/devices/register/
-  /// Payload: { "token": "...", "device_type": "android"|"ios", "active": true }
+  /// Payload: { "token": "...", "platform": "android"|"ios",
+  ///            "app_type": "vendor", "active": true }
+  ///
+  /// `app_type=vendor` is critical: backend uses it to route customer-only
+  /// notifications (Order Confirmed / Ready / Delivered, etc.) only to
+  /// customer-app tokens, even when the same user account is logged into
+  /// both the customer site and this vendor app.
   Future<void> _registerTokenWithBackend(String token) async {
     // Only register if user is authenticated
     final hasTokens = await _storageService.hasTokens();
@@ -256,6 +262,7 @@ class PushNotificationService {
           'token': token,
           'device_type': deviceType,
           'platform': deviceType,
+          'app_type': 'vendor',
           'active': true,
         },
       );
@@ -414,6 +421,7 @@ class PushNotificationService {
             'token': token,
             'device_type': Platform.isIOS ? 'ios' : 'android',
             'platform': Platform.isIOS ? 'ios' : 'android',
+            'app_type': 'vendor',
             'active': false,
           },
         );

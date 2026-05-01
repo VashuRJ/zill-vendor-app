@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_sizes.dart';
 import '../../../core/constants/app_strings.dart';
+import '../../../core/models/verification_status.dart';
 import '../../../core/routing/app_router.dart';
 import '../../../shared/widgets/stat_card.dart';
 import '../../../shared/widgets/shimmer_widgets.dart';
@@ -452,9 +453,14 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
   @override
   Widget build(BuildContext context) {
     final vm = widget.vm;
-    final isOnline = vm.data.isStoreOpen;
+    // Toggle is gated on KYC approval (+ admin-controlled is_active).
+    // When locked we force-render the offline/grey treatment regardless
+    // of the persisted `store_status`, so the UI never implies the
+    // store is accepting orders while the backend will reject attempts.
+    final isLocked = !vm.canAcceptOrders;
+    final isOnline = !isLocked && vm.data.isStoreOpen;
 
-    return AnimatedContainer(
+    final card = AnimatedContainer(
       duration: const Duration(milliseconds: 400),
       curve: Curves.easeInOut,
       width: double.infinity,
@@ -480,30 +486,50 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
         padding: const EdgeInsets.all(AppSizes.lg),
         child: Row(
           children: [
-            // ── Pulsing status dot ─────────────────────────
-            AnimatedBuilder(
-              animation: _pulseAnimation,
-              builder: (_, _) => Container(
-                width: 14,
-                height: 14,
+            // ── Pulsing status dot / lock badge ─────────────
+            if (isLocked)
+              Container(
+                width: 28,
+                height: 28,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.white.withValues(
-                    alpha: isOnline ? _pulseAnimation.value : 0.5,
+                  color: Colors.white.withValues(alpha: 0.15),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    width: 1,
                   ),
-                  boxShadow: isOnline
-                      ? [
-                          BoxShadow(
-                            color: Colors.white.withValues(
-                              alpha: _pulseAnimation.value * 0.5,
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.lock_rounded,
+                  size: 16,
+                  color: Colors.white,
+                ),
+              )
+            else
+              AnimatedBuilder(
+                animation: _pulseAnimation,
+                builder: (_, _) => Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withValues(
+                      alpha: isOnline ? _pulseAnimation.value : 0.5,
+                    ),
+                    boxShadow: isOnline
+                        ? [
+                            BoxShadow(
+                              color: Colors.white.withValues(
+                                alpha: _pulseAnimation.value * 0.5,
+                              ),
+                              blurRadius: 8,
                             ),
-                            blurRadius: 8,
-                          ),
-                        ]
-                      : null,
+                          ]
+                        : null,
+                  ),
                 ),
               ),
-            ),
             const SizedBox(width: AppSizes.md),
 
             // ── Text content ───────────────────────────────
@@ -512,14 +538,29 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    isOnline ? 'Accepting Orders' : 'Currently Offline',
+                    isLocked
+                        ? 'Verification Required'
+                        : (isOnline
+                            ? 'Accepting Orders'
+                            : 'Currently Offline'),
                     style:
                         Theme.of(context).textTheme.titleLarge?.copyWith(
                               color: Colors.white,
                               fontWeight: FontWeight.w700,
                             ),
                   ),
-                  if (vm.data.storeName.isNotEmpty) ...[
+                  if (isLocked) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      _lockedSubtitle(vm.verificationStatus, vm.data.isActive),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.85),
+                          ),
+                    ),
+                  ] else if (vm.data.storeName.isNotEmpty) ...[
                     const SizedBox(height: 2),
                     Text(
                       vm.data.storeName,
@@ -531,7 +572,7 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
                           ),
                     ),
                   ],
-                  if (vm.data.todayOpenTime.isNotEmpty) ...[
+                  if (!isLocked && vm.data.todayOpenTime.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Row(
                       children: [
@@ -557,7 +598,7 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
               ),
             ),
 
-            // ── Toggle switch or loading spinner ──────────
+            // ── Toggle switch / lock indicator / spinner ──
             if (vm.isToggling)
               const SizedBox(
                 width: 28,
@@ -566,6 +607,14 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
                   strokeWidth: 2.5,
                   color: Colors.white,
                 ),
+              )
+            else if (isLocked)
+              // Chevron hints the whole card is tappable and leads
+              // somewhere (KYC screen) rather than flipping state.
+              Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white.withValues(alpha: 0.85),
+                size: 28,
               )
             else
               Switch(
@@ -582,8 +631,71 @@ class _StoreToggleCardState extends State<_StoreToggleCard>
         ),
       ),
     );
+
+    if (!isLocked) return card;
+
+    // Locked: the whole card becomes a tap target that routes to the
+    // KYC Documents screen so the vendor can resolve verification.
+    // admin-disabled (is_active=false) is a separate, rarer case where
+    // uploading docs won't help — we route there anyway because it's
+    // still the most actionable screen from the dashboard.
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(AppSizes.radiusLg),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppSizes.radiusLg),
+        onTap: () => _onLockedTap(context, vm),
+        child: card,
+      ),
+    );
   }
 
+  void _onLockedTap(BuildContext context, DashboardViewModel vm) {
+    final status = vm.verificationStatus;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+
+    // Admin-disabled: nothing the vendor can do, just inform.
+    if (!vm.data.isActive) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Your restaurant has been disabled by admin. Contact support.',
+          ),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    // KYC-related lock — route to docs.
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(status.bannerMessage),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+    Navigator.pushNamed(context, AppRouter.kycDocuments);
+  }
+
+  String _lockedSubtitle(VerificationStatus status, bool isActive) {
+    if (!isActive) {
+      return 'Your restaurant is disabled. Contact support.';
+    }
+    switch (status) {
+      case VerificationStatus.pending:
+        return 'Upload documents to unlock';
+      case VerificationStatus.submitted:
+      case VerificationStatus.underReview:
+        return 'Documents under review (24-48 hrs)';
+      case VerificationStatus.rejected:
+        return 'Documents rejected — tap to re-upload';
+      case VerificationStatus.approved:
+        return 'Awaiting activation';
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -742,6 +854,10 @@ class _QuickStatsGrid extends StatelessWidget {
         ),
         StatCard(
           title: AppStrings.todayRevenue,
+          // GMV, not payout — warn vendors before they count this as
+          // take-home money. Phrasing mirrors the web dashboard note.
+          infoMessage: 'Subtotal of paid orders. Commission + GST are '
+              'deducted in your weekly settlement.',
           value: '\u20B9${data.todayRevenue.toStringAsFixed(0)}',
           icon: Icons.currency_rupee_rounded,
           gradient: const [Color(0xFF10B981), Color(0xFF059669)],
